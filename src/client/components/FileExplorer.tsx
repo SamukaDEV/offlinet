@@ -500,14 +500,23 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                       </div>
                     )}
 
-                    {/* Quick action buttons on hover */}
-                    <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {/* Center play icon for video */}
+                    {item.mediaType === "video" && (
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/20 transition-opacity pointer-events-none z-10">
+                        <div className="w-10 h-10 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg transform group-hover:scale-110 transition-transform">
+                          <Play className="w-4 h-4 fill-white ml-0.5" />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Quick action buttons on hover (z-20 to stay firmly above any overlay) */}
+                    <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-20">
                       {!item.isDirectory && (
                         <a
                           href={item.downloadUrl}
                           download
                           onClick={(e) => e.stopPropagation()}
-                          className="p-1.5 rounded-lg bg-black/70 hover:bg-neutral-800 text-neutral-200 hover:text-white backdrop-blur-sm"
+                          className="p-1.5 rounded-lg bg-neutral-900/95 hover:bg-neutral-800 text-neutral-200 hover:text-white border border-neutral-700/60 shadow-md transition-colors"
                           title="Baixar arquivo"
                         >
                           <Download className="w-3.5 h-3.5" />
@@ -518,7 +527,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                           e.stopPropagation();
                           setMovingItem(item);
                         }}
-                        className="p-1.5 rounded-lg bg-black/70 hover:bg-neutral-800 text-neutral-200 hover:text-white backdrop-blur-sm"
+                        className="p-1.5 rounded-lg bg-neutral-900/95 hover:bg-neutral-800 text-neutral-200 hover:text-white border border-neutral-700/60 shadow-md transition-colors"
                         title="Mover para outra pasta ou disco"
                       >
                         <FolderInput className="w-3.5 h-3.5" />
@@ -529,28 +538,19 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                           setRenamingItem(item);
                           setNewName(item.name);
                         }}
-                        className="p-1.5 rounded-lg bg-black/70 hover:bg-neutral-800 text-neutral-200 hover:text-white backdrop-blur-sm"
+                        className="p-1.5 rounded-lg bg-neutral-900/95 hover:bg-neutral-800 text-neutral-200 hover:text-white border border-neutral-700/60 shadow-md transition-colors"
                         title="Renomear"
                       >
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={(e) => handleDeleteItem(item, e)}
-                        className="p-1.5 rounded-lg bg-black/70 hover:bg-rose-900 text-rose-300 hover:text-white backdrop-blur-sm"
+                        className="p-1.5 rounded-lg bg-neutral-900/95 hover:bg-rose-900 text-rose-300 hover:text-white border border-rose-900/60 shadow-md transition-colors"
                         title="Excluir do disco"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
-
-                    {/* Center play icon for video */}
-                    {item.mediaType === "video" && (
-                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/30 backdrop-blur-[1px] transition-opacity">
-                        <div className="w-10 h-10 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg">
-                          <Play className="w-4 h-4 fill-white ml-0.5" />
-                        </div>
-                      </div>
-                    )}
                   </div>
 
                   {/* Card Info */}
