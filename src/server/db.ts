@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import fs from "fs";
 import path from "path";
-import type { StorageRoot, FileItem, WatchProgress, MediaMetadata } from "../types";
+import type { StorageRoot, FileItem, WatchProgress, MediaMetadata, Playlist } from "../types";
 
 const DATA_DIR = path.resolve(process.cwd(), ".offlinet_data");
 const CACHE_DIR = path.resolve(DATA_DIR, "cache");
@@ -68,10 +68,27 @@ db.exec(`
     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS playlists (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS playlist_items (
+    id TEXT PRIMARY KEY,
+    playlist_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    added_at INTEGER NOT NULL,
+    FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+  );
+
   CREATE INDEX IF NOT EXISTS idx_files_storage ON files(storage_id);
   CREATE INDEX IF NOT EXISTS idx_files_media_type ON files(media_type);
   CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_path);
   CREATE INDEX IF NOT EXISTS idx_watch_history_time ON watch_history(last_watched_at);
+  CREATE INDEX IF NOT EXISTS idx_playlist_items_pid ON playlist_items(playlist_id);
 `);
 
 export const DATA_PATHS = {
@@ -381,6 +398,97 @@ export const watchRepo = {
 
   clearProgress: (fileId: string) => {
     db.run(`DELETE FROM watch_history WHERE file_id = ?`, [fileId]);
+  },
+};
+
+// Playlists queries
+export const playlistRepo = {
+  getAll: (): Playlist[] => {
+    const rows = db.query(`
+      SELECT 
+        p.id, 
+        p.name, 
+        p.created_at as createdAt,
+        (SELECT COUNT(*) FROM playlist_items pi WHERE pi.playlist_id = p.id) as itemCount
+      FROM playlists p
+      ORDER BY p.created_at DESC
+    `).all() as any[];
+
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      createdAt: r.createdAt,
+      itemCount: r.itemCount || 0,
+    }));
+  },
+
+  getById: (id: string): Playlist | null => {
+    const p = db.query(`SELECT id, name, created_at as createdAt FROM playlists WHERE id = ?`).get(id) as any;
+    if (!p) return null;
+
+    const itemRows = db.query(`
+      SELECT 
+        f.*, 
+        s.name as storage_name,
+        w.progress_seconds,
+        w.duration_seconds as watch_duration,
+        w.completed as watch_completed,
+        w.last_watched_at
+      FROM playlist_items pi
+      JOIN files f ON pi.file_id = f.id
+      JOIN storage_roots s ON f.storage_id = s.id
+      LEFT JOIN watch_history w ON f.id = w.file_id
+      WHERE pi.playlist_id = ?
+      ORDER BY pi.position ASC, pi.added_at ASC
+    `).all(id) as any[];
+
+    const items = itemRows.map(mapDbRowToFileItem);
+
+    return {
+      id: p.id,
+      name: p.name,
+      createdAt: p.createdAt,
+      itemCount: items.length,
+      items,
+    };
+  },
+
+  create: (name: string): Playlist => {
+    const id = "pl_" + Math.random().toString(36).substring(2, 9) + Date.now().toString(36);
+    const now = Date.now();
+    db.run(`INSERT INTO playlists (id, name, created_at) VALUES (?, ?, ?)`, [id, name, now]);
+    return {
+      id,
+      name,
+      createdAt: now,
+      itemCount: 0,
+      items: [],
+    };
+  },
+
+  delete: (id: string): boolean => {
+    db.run(`DELETE FROM playlists WHERE id = ?`, [id]);
+    return true;
+  },
+
+  addItem: (playlistId: string, fileId: string): boolean => {
+    const existing = db.query(`SELECT id FROM playlist_items WHERE playlist_id = ? AND file_id = ?`).get(playlistId, fileId);
+    if (existing) return true;
+
+    const maxPosRow = db.query(`SELECT MAX(position) as maxPos FROM playlist_items WHERE playlist_id = ?`).get(playlistId) as any;
+    const nextPos = (maxPosRow?.maxPos ?? -1) + 1;
+    const itemId = "pli_" + Math.random().toString(36).substring(2, 9) + Date.now().toString(36);
+
+    db.run(
+      `INSERT INTO playlist_items (id, playlist_id, file_id, position, added_at) VALUES (?, ?, ?, ?, ?)`,
+      [itemId, playlistId, fileId, nextPos, Date.now()]
+    );
+    return true;
+  },
+
+  removeItem: (playlistId: string, fileId: string): boolean => {
+    db.run(`DELETE FROM playlist_items WHERE playlist_id = ? AND file_id = ?`, [playlistId, fileId]);
+    return true;
   },
 };
 

@@ -17,6 +17,7 @@ import {
 import { handleStorageRoutes } from "./routes/storage";
 import { handleFilesRoutes } from "./routes/files";
 import { handleMediaRoutes } from "./routes/media";
+import { handlePlaylistRoutes } from "./routes/playlists";
 import type { SystemInfo } from "../types";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -100,7 +101,13 @@ const server = Bun.serve({
         if (res) return withCors(res);
       }
 
-      // 4. Video / Audio Streaming endpoint: /api/stream/:fileId
+      // 4. Playlists API
+      if (url.pathname.startsWith("/api/playlists")) {
+        const res = await handlePlaylistRoutes(req, url);
+        if (res) return withCors(res);
+      }
+
+      // 5. Video / Audio Streaming endpoint: /api/stream/:fileId
       if (url.pathname.startsWith("/api/stream/")) {
         const fileId = url.pathname.replace("/api/stream/", "");
         const file = fileRepo.getById(fileId);

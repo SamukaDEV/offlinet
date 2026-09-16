@@ -77,3 +77,20 @@ export interface SystemInfo {
   totalIndexedFiles: number;
   totalIndexedVideos: number;
 }
+
+export interface Playlist {
+  id: string;
+  name: string;
+  createdAt: number;
+  itemCount: number;
+  items?: FileItem[];
+}
+
+export interface PlaylistItem {
+  id: string;
+  playlistId: string;
+  fileId: string;
+  position: number;
+  addedAt: number;
+  file?: FileItem;
+}

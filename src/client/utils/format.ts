@@ -19,6 +19,8 @@ export function formatSeconds(seconds: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
+export const formatDuration = formatSeconds;
+
 export function formatHumanDuration(seconds?: number): string {
   if (!seconds || seconds <= 0) return "";
   const h = Math.floor(seconds / 3600);

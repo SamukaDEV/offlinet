@@ -20,12 +20,16 @@ import {
   Play,
   Eye,
   FolderInput,
+  ListMusic,
+  ListPlus,
 } from "lucide-react";
 import type { FileItem, StorageRoot, MediaType } from "../../types";
 import { formatBytes, formatDate } from "../utils/format";
 import { FileUploader } from "./FileUploader";
 import { MediaPreviewModal } from "./MediaPreviewModal";
 import { MoveModal } from "./MoveModal";
+import { PlaylistModal } from "./PlaylistModal";
+import { useAudio } from "../context/AudioContext";
 
 interface FileExplorerProps {
   storageRoots: StorageRoot[];
@@ -53,6 +57,10 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   const [showUploader, setShowUploader] = useState(false);
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
   const [movingItem, setMovingItem] = useState<FileItem | null>(null);
+  const [showPlaylistModal, setShowPlaylistModal] = useState(false);
+  const [selectedTrackForPlaylist, setSelectedTrackForPlaylist] = useState<FileItem | null>(null);
+
+  const { playFolder, playTrack } = useAudio();
 
   // New folder & Rename prompts
   const [newFolderPrompt, setNewFolderPrompt] = useState(false);
@@ -102,6 +110,10 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       // File clicked
       if (item.mediaType === "video") {
         onPlayVideo(item);
+      } else if (item.mediaType === "audio") {
+        const audioTracks = filteredItems.filter((f) => f.mediaType === "audio" && !f.isDirectory);
+        const idx = audioTracks.findIndex((f) => f.id === item.id);
+        playFolder(audioTracks, idx >= 0 ? idx : 0);
       } else {
         setPreviewFile(item);
       }
@@ -305,8 +317,34 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
               ))}
             </div>
 
-            {/* Action Buttons: New Folder, Upload */}
+            {/* Action Buttons: Play Folder, Playlists, New Folder, Upload */}
             <div className="flex items-center gap-2">
+              {filteredItems.filter((f) => f.mediaType === "audio" && !f.isDirectory).length > 0 && (
+                <button
+                  onClick={() => {
+                    const audios = filteredItems.filter((f) => f.mediaType === "audio" && !f.isDirectory);
+                    playFolder(audios, 0);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-md shadow-emerald-600/20 transition-all"
+                  title="Tocar todas as músicas desta pasta em sequência"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Tocar Pasta ({filteredItems.filter((f) => f.mediaType === "audio" && !f.isDirectory).length})</span>
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  setSelectedTrackForPlaylist(null);
+                  setShowPlaylistModal(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-emerald-400 hover:text-emerald-300 border border-neutral-700/80 text-xs font-semibold rounded-xl transition-all"
+                title="Minhas Playlists"
+              >
+                <ListMusic className="w-3.5 h-3.5" />
+                <span>Playlists</span>
+              </button>
+
               {currentStorageId && (
                 <>
                   <button
@@ -500,7 +538,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                       </div>
                     )}
 
-                    {/* Center play icon for video */}
+                    {/* Center play icon for video and audio */}
                     {item.mediaType === "video" && (
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/20 transition-opacity pointer-events-none z-10">
                         <div className="w-10 h-10 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg transform group-hover:scale-110 transition-transform">
@@ -508,9 +546,29 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                         </div>
                       </div>
                     )}
+                    {item.mediaType === "audio" && (
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/20 transition-opacity pointer-events-none z-10">
+                        <div className="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-lg transform group-hover:scale-110 transition-transform">
+                          <Play className="w-4 h-4 fill-white ml-0.5" />
+                        </div>
+                      </div>
+                    )}
 
                     {/* Quick action buttons on hover (z-20 to stay firmly above any overlay) */}
                     <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                      {item.mediaType === "audio" && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedTrackForPlaylist(item);
+                            setShowPlaylistModal(true);
+                          }}
+                          className="p-1.5 rounded-lg bg-neutral-900/95 hover:bg-neutral-800 text-emerald-400 hover:text-white border border-neutral-700/60 shadow-md transition-colors"
+                          title="Adicionar à Playlist"
+                        >
+                          <ListPlus className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       {!item.isDirectory && (
                         <a
                           href={item.downloadUrl}
@@ -599,6 +657,18 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                       </td>
                       <td className="p-3.5 text-right">
                         <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                          {item.mediaType === "audio" && (
+                            <button
+                              onClick={() => {
+                                setSelectedTrackForPlaylist(item);
+                                setShowPlaylistModal(true);
+                              }}
+                              className="p-1.5 hover:bg-neutral-800 rounded-lg text-emerald-400 hover:text-emerald-300"
+                              title="Adicionar à Playlist"
+                            >
+                              <ListPlus className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                           {!item.isDirectory && (
                             <a
                               href={item.downloadUrl}
@@ -678,6 +748,16 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
           }}
         />
       )}
+
+      {/* Playlist Manager / Add Modal */}
+      <PlaylistModal
+        isOpen={showPlaylistModal}
+        onClose={() => {
+          setShowPlaylistModal(false);
+          setSelectedTrackForPlaylist(null);
+        }}
+        trackToAdd={selectedTrackForPlaylist}
+      />
     </div>
   );
 };
