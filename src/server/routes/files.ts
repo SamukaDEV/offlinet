@@ -387,5 +387,27 @@ export async function handleFilesRoutes(req: Request, url: URL): Promise<Respons
     }
   }
 
+  // POST /api/files/metadata - Update file duration or dimensions
+  if (pathname === "/api/files/metadata" && method === "POST") {
+    try {
+      const body = await req.json();
+      const { id, duration, width, height } = body;
+      if (!id) {
+        return Response.json({ success: false, error: "Parâmetro id é obrigatório" }, { status: 400 });
+      }
+
+      fileRepo.updateMetadata(id, {
+        duration: typeof duration === "number" && duration > 0 ? duration : undefined,
+        width: typeof width === "number" && width > 0 ? width : undefined,
+        height: typeof height === "number" && height > 0 ? height : undefined,
+      });
+
+      return Response.json({ success: true });
+    } catch (err: any) {
+      console.error("[Files] Erro ao atualizar metadados:", err);
+      return Response.json({ success: false, error: err.message }, { status: 500 });
+    }
+  }
+
   return null;
 }

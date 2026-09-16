@@ -55,6 +55,17 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [buffered, setBuffered] = useState<number>(0);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const currentTrackRef = useRef<FileItem | null>(null);
+  const queueIndexRef = useRef<number>(-1);
+  const probedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    currentTrackRef.current = currentTrack;
+  }, [currentTrack]);
+
+  useEffect(() => {
+    queueIndexRef.current = queueIndex;
+  }, [queueIndex]);
 
   // Initialize audio element once
   useEffect(() => {
@@ -70,7 +81,25 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     const onLoadedMetadata = () => {
-      setDuration(audio.duration || 0);
+      const dur = Math.round(audio.duration || 0);
+      setDuration(dur);
+
+      if (dur > 0) {
+        const cur = currentTrackRef.current;
+        const curIdx = queueIndexRef.current;
+        if (cur) {
+          setCurrentTrack((prev) => (prev && prev.id === cur.id ? { ...prev, duration: dur } : prev));
+          setQueue((prev) =>
+            prev.map((t, idx) => (idx === curIdx || t.id === cur.id ? { ...t, duration: dur } : t))
+          );
+          // Persist duration to backend database
+          fetch("/api/files/metadata", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: cur.id, duration: dur }),
+          }).catch(() => {});
+        }
+      }
     };
 
     const onPlay = () => setIsPlaying(true);
@@ -90,6 +119,40 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       audio.src = "";
     };
   }, []);
+
+  // Proactively probe durations for any queue items missing duration
+  useEffect(() => {
+    let isCancelled = false;
+    const missing = queue.filter(
+      (t) => (!t.duration || t.duration === 0) && !probedRef.current.has(t.id)
+    );
+    if (missing.length === 0) return;
+
+    const probeQueue = async () => {
+      for (const track of missing) {
+        if (isCancelled) break;
+        probedRef.current.add(track.id);
+        const dur = await probeAudioDuration(track.streamUrl || `/api/stream/${track.id}`);
+        if (isCancelled) break;
+        if (dur > 0) {
+          setQueue((prev) =>
+            prev.map((t) => (t.id === track.id ? { ...t, duration: dur } : t))
+          );
+          fetch("/api/files/metadata", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: track.id, duration: dur }),
+          }).catch(() => {});
+        }
+      }
+    };
+
+    probeQueue();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [queue]);
 
   // Sync volume with audio element
   useEffect(() => {
@@ -141,6 +204,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const loadAndPlay = (track: FileItem) => {
     if (!audioRef.current) return;
+    currentTrackRef.current = track;
     setCurrentTrack(track);
     setCurrentTime(0);
     setDuration(track.duration || 0);
@@ -154,8 +218,11 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const playTrack = useCallback((track: FileItem, newQueue?: FileItem[]) => {
     const effectiveQueue = newQueue && newQueue.length > 0 ? newQueue : [track];
     const idx = effectiveQueue.findIndex((t) => t.id === track.id);
+    const validIdx = idx >= 0 ? idx : 0;
+    queueIndexRef.current = validIdx;
+    currentTrackRef.current = track;
     setQueue(effectiveQueue);
-    setQueueIndex(idx >= 0 ? idx : 0);
+    setQueueIndex(validIdx);
     loadAndPlay(track);
   }, []);
 
@@ -164,6 +231,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (audioTracks.length === 0) return;
 
     const safeIndex = Math.max(0, Math.min(startIndex, audioTracks.length - 1));
+    queueIndexRef.current = safeIndex;
+    currentTrackRef.current = audioTracks[safeIndex];
     setQueue(audioTracks);
     setQueueIndex(safeIndex);
     loadAndPlay(audioTracks[safeIndex]);
@@ -171,6 +240,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const playPlaylist = useCallback((playlist: Playlist) => {
     if (!playlist.items || playlist.items.length === 0) return;
+    queueIndexRef.current = 0;
+    currentTrackRef.current = playlist.items[0];
     setQueue(playlist.items);
     setQueueIndex(0);
     loadAndPlay(playlist.items[0]);
@@ -290,6 +361,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const jumpToQueueIndex = useCallback((index: number) => {
     if (index >= 0 && index < queue.length) {
+      queueIndexRef.current = index;
+      currentTrackRef.current = queue[index];
       setQueueIndex(index);
       loadAndPlay(queue[index]);
     }
@@ -342,3 +415,42 @@ export const useAudio = (): AudioContextType => {
   }
   return context;
 };
+
+/**
+ * Lazily probes audio metadata in the browser using a temporary Audio element
+ */
+function probeAudioDuration(url: string): Promise<number> {
+  return new Promise((resolve) => {
+    const audio = new Audio();
+    audio.preload = "metadata";
+    let timer: any = null;
+
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      audio.removeEventListener("loadedmetadata", onLoaded);
+      audio.removeEventListener("error", onError);
+      audio.src = "";
+    };
+
+    const onLoaded = () => {
+      const dur = Math.round(audio.duration || 0);
+      cleanup();
+      resolve(dur);
+    };
+
+    const onError = () => {
+      cleanup();
+      resolve(0);
+    };
+
+    audio.addEventListener("loadedmetadata", onLoaded);
+    audio.addEventListener("error", onError);
+    audio.src = url;
+
+    // Timeout after 3.5s to not block anything
+    timer = setTimeout(() => {
+      cleanup();
+      resolve(0);
+    }, 3500);
+  });
+}

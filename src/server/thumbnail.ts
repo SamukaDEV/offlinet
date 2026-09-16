@@ -98,6 +98,28 @@ export function probeVideo(videoPath: string): VideoMetadata {
 }
 
 /**
+ * Probes media duration (audio or video) in seconds
+ */
+export function probeMediaDuration(mediaPath: string): number {
+  if (!ffmpegCmd || !fs.existsSync(mediaPath)) return 0;
+  try {
+    const proc = Bun.spawnSync([ffmpegCmd, "-i", mediaPath], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const output = proc.stderr.toString();
+    const durMatch = output.match(/Duration:\s*(\d{2}):(\d{2}):(\d{2}\.?\d*)/);
+    if (durMatch) {
+      const h = parseFloat(durMatch[1]);
+      const m = parseFloat(durMatch[2]);
+      const s = parseFloat(durMatch[3]);
+      return Math.round(h * 3600 + m * 60 + s);
+    }
+  } catch {}
+  return 0;
+}
+
+/**
  * Extracts a high quality frame thumbnail from the video file
  */
 export async function generateFfmpegThumbnail(videoPath: string, destPath: string): Promise<boolean> {
@@ -200,36 +222,55 @@ export async function ensureVideoThumbnail(file: FileItem): Promise<string | nul
   return null;
 }
 
-// Background Thumbnail Extraction Queue
-const thumbnailQueue: FileItem[] = [];
+// Background Media Processing Queue (Thumbnails & Audio Metadata)
+const mediaQueue: FileItem[] = [];
 let isProcessingQueue = false;
 
 export function enqueueVideoThumbnail(file: FileItem) {
   if (file.mediaType !== "video" || file.isDirectory) return;
   const cached = getCachedThumbnailPath(file.id);
-  if (fs.existsSync(cached)) return;
+  if (fs.existsSync(cached) && file.duration && file.duration > 0) return;
 
   // Avoid duplicates
-  if (!thumbnailQueue.some((f) => f.id === file.id)) {
-    thumbnailQueue.push(file);
+  if (!mediaQueue.some((f) => f.id === file.id)) {
+    mediaQueue.push(file);
+  }
+
+  processQueue();
+}
+
+export function enqueueAudioProbe(file: FileItem) {
+  if (file.mediaType !== "audio" || file.isDirectory) return;
+  if (file.duration && file.duration > 0) return;
+
+  // Avoid duplicates
+  if (!mediaQueue.some((f) => f.id === file.id)) {
+    mediaQueue.push(file);
   }
 
   processQueue();
 }
 
 async function processQueue() {
-  if (isProcessingQueue || thumbnailQueue.length === 0) return;
+  if (isProcessingQueue || mediaQueue.length === 0) return;
   isProcessingQueue = true;
 
   try {
-    while (thumbnailQueue.length > 0) {
-      const file = thumbnailQueue.shift();
+    while (mediaQueue.length > 0) {
+      const file = mediaQueue.shift();
       if (!file) break;
 
       try {
-        await ensureVideoThumbnail(file);
+        if (file.mediaType === "audio") {
+          const dur = probeMediaDuration(file.fullPath);
+          if (dur > 0) {
+            fileRepo.updateMetadata(file.id, { duration: dur });
+          }
+        } else {
+          await ensureVideoThumbnail(file);
+        }
       } catch (err) {
-        console.error(`[Thumbnail] Falha ao processar miniatura de ${file.name}:`, err);
+        console.error(`[MediaQueue] Falha ao processar ${file.name}:`, err);
       }
     }
   } finally {

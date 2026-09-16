@@ -19,11 +19,12 @@ import { handleFilesRoutes } from "./routes/files";
 import { handleMediaRoutes } from "./routes/media";
 import { handlePlaylistRoutes } from "./routes/playlists";
 import type { SystemInfo } from "../types";
+import index from "../../index.html";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const DIST_DIR = path.resolve(process.cwd(), "dist");
 
-// Initialize default storage root if empty
+// Initialize default storage root if empty (OffliNet LAN - 2026-09-16T20:28:40)
 function initializeDefaultStorage() {
   const existing = storageRepo.getAll();
   if (existing.length === 0) {
@@ -51,12 +52,15 @@ initializeDefaultStorage();
 // Start initial background scan
 scanAllRoots().catch(console.error);
 
-const server = Bun.serve({
+const serverOptions = {
   port: PORT,
+  routes: {
+    "/*": index
+  },
   // Support uploads of large 4K movies/files up to 100GB
   maxRequestBodySize: 1024 * 1024 * 1024 * 100, // 100 GB
   idleTimeout: 255, // Max idle timeout for long LAN transfers
-  async fetch(req) {
+  async fetch(req: Request) {
     const url = new URL(req.url);
 
     // Handle CORS preflight
@@ -97,12 +101,16 @@ const server = Bun.serve({
 
       // 3. Media API
       if (url.pathname.startsWith("/api/media")) {
+        delete require.cache[require.resolve("./routes/media")];
+        const { handleMediaRoutes } = require("./routes/media");
         const res = await handleMediaRoutes(req, url);
         if (res) return withCors(res);
       }
 
       // 4. Playlists API
       if (url.pathname.startsWith("/api/playlists")) {
+        delete require.cache[require.resolve("./routes/playlists")];
+        const { handlePlaylistRoutes } = require("./routes/playlists");
         const res = await handlePlaylistRoutes(req, url);
         if (res) return withCors(res);
       }
@@ -246,7 +254,20 @@ const server = Bun.serve({
       return withCors(Response.json({ success: false, error: err.message }, { status: 500 }));
     }
   },
-});
+};
+
+export default serverOptions;
+
+// If global server already exists from previous execution, reload fetch handler
+if ((globalThis as any).__offlinet_server) {
+  try {
+    (globalThis as any).__offlinet_server.reload(serverOptions);
+  } catch {}
+} else {
+  try {
+    (globalThis as any).__offlinet_server = Bun.serve(serverOptions);
+  } catch {}
+}
 
 const lanAddresses = getLanAddresses(PORT);
 console.log("\n=======================================================");

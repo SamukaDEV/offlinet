@@ -20,6 +20,8 @@ const MIME_MAP: Record<string, string> = {
   ".ogg": "audio/ogg",
   ".m4a": "audio/mp4",
   ".aac": "audio/aac",
+  ".m3u": "audio/x-mpegurl",
+  ".m3u8": "application/x-mpegurl",
 
   // Images
   ".jpg": "image/jpeg",

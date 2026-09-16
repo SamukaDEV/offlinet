@@ -1,4 +1,9 @@
-import { playlistRepo } from "../db";
+import fs from "fs";
+import path from "path";
+import { playlistRepo, fileRepo, storageRepo } from "../db";
+import { getMimeType } from "../streamer";
+import { generateFileId } from "../scanner";
+import type { FileItem } from "../../types";
 
 export async function handlePlaylistRoutes(req: Request, url: URL): Promise<Response | null> {
   const pathname = url.pathname;
@@ -24,6 +29,18 @@ export async function handlePlaylistRoutes(req: Request, url: URL): Promise<Resp
     } catch (err: any) {
       return Response.json({ success: false, error: err.message }, { status: 500 });
     }
+  }
+
+  // GET /api/playlists/parse-m3u/:fileId - Parse .m3u / .m3u8 playlist file
+  if (pathname.startsWith("/api/playlists/parse-m3u/") && method === "GET") {
+    const fileId = pathname.replace("/api/playlists/parse-m3u/", "");
+    const file = fileRepo.getById(fileId);
+    if (!file || !fs.existsSync(file.fullPath)) {
+      return Response.json({ success: false, error: "Arquivo de playlist não encontrado" }, { status: 404 });
+    }
+
+    const result = parseM3uFile(file);
+    return Response.json({ success: true, ...result });
   }
 
   // GET /api/playlists/:id - Get playlist details with track list
@@ -80,4 +97,89 @@ export async function handlePlaylistRoutes(req: Request, url: URL): Promise<Resp
   }
 
   return null;
+}
+
+function parseM3uFile(file: FileItem): {
+  name: string;
+  tracks: FileItem[];
+  totalEntries: number;
+  totalFound: number;
+} {
+  const content = fs.readFileSync(file.fullPath, "utf-8");
+  const baseDir = path.dirname(file.fullPath);
+  const lines = content.split(/\r?\n/);
+
+  const playlistName = path.basename(file.name, path.extname(file.name));
+  const tracks: FileItem[] = [];
+  let totalEntries = 0;
+
+  for (let rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+
+    totalEntries++;
+
+    // Try candidate path
+    let candidatePath = line;
+    if (!path.isAbsolute(candidatePath)) {
+      candidatePath = path.resolve(baseDir, candidatePath);
+    }
+
+    candidatePath = path.normalize(candidatePath);
+
+    // If not found, try matching filename directly in the same directory as m3u
+    if (!fs.existsSync(candidatePath)) {
+      const alt = path.join(baseDir, path.basename(line));
+      if (fs.existsSync(alt)) {
+        candidatePath = alt;
+      }
+    }
+
+    if (fs.existsSync(candidatePath)) {
+      let item = fileRepo.getByFullPath(candidatePath);
+      if (!item) {
+        const altSlash = candidatePath.replace(/\\/g, "/");
+        item = fileRepo.getByFullPath(altSlash);
+      }
+
+      if (!item) {
+        const fileName = path.basename(candidatePath);
+        const roots = storageRepo.getAll();
+        const root = roots.find((r) => candidatePath.toLowerCase().startsWith(r.path.toLowerCase()));
+        if (root) {
+          const rel = path.relative(root.path, candidatePath).replace(/\\/g, "/");
+          const parent = path.dirname(rel).replace(/\\/g, "/");
+          const ext = path.extname(fileName).toLowerCase();
+          const stat = fs.statSync(candidatePath);
+          const genId = generateFileId(root.id, rel);
+          fileRepo.upsert({
+            id: genId,
+            storageId: root.id,
+            relativePath: rel,
+            fullPath: candidatePath,
+            name: fileName,
+            extension: ext,
+            size: stat.size,
+            isDirectory: false,
+            mediaType: "audio",
+            mimeType: getMimeType(candidatePath),
+            parentPath: parent === "." ? "/" : parent,
+            updatedAt: stat.mtimeMs,
+          });
+          item = fileRepo.getById(genId);
+        }
+      }
+
+      if (item && !tracks.some((t) => t.id === item!.id)) {
+        tracks.push(item);
+      }
+    }
+  }
+
+  return {
+    name: playlistName,
+    tracks,
+    totalEntries,
+    totalFound: tracks.length,
+  };
 }

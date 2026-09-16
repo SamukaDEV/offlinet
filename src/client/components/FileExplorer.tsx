@@ -59,8 +59,34 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   const [movingItem, setMovingItem] = useState<FileItem | null>(null);
   const [showPlaylistModal, setShowPlaylistModal] = useState(false);
   const [selectedTrackForPlaylist, setSelectedTrackForPlaylist] = useState<FileItem | null>(null);
+  const [parsingM3uId, setParsingM3uId] = useState<string | null>(null);
 
   const { playFolder, playTrack } = useAudio();
+
+  const handlePlayM3u = async (item: FileItem) => {
+    try {
+      setParsingM3uId(item.id);
+      let res = await fetch(`/api/playlists/parse-m3u/${item.id}`);
+      let data = await res.json();
+      if (!data.success && (data.error === "Playlist não encontrada" || res.status === 404)) {
+        res = await fetch(`/api/media/parse-m3u/${item.id}`);
+        data = await res.json();
+      }
+      if (data.success && data.tracks && data.tracks.length > 0) {
+        playFolder(data.tracks, 0);
+      } else if (data.tracks && data.tracks.length === 0) {
+        alert(
+          `Playlist "${item.name}": nenhuma das ${data.totalEntries || 0} músicas referenciadas no arquivo foi encontrada nas pastas do servidor.`
+        );
+      } else {
+        alert(data.error || "Não foi possível carregar as músicas da playlist.");
+      }
+    } catch (err: any) {
+      alert("Erro ao processar arquivo .m3u: " + err.message);
+    } finally {
+      setParsingM3uId(null);
+    }
+  };
 
   // New folder & Rename prompts
   const [newFolderPrompt, setNewFolderPrompt] = useState(false);
@@ -110,8 +136,16 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       // File clicked
       if (item.mediaType === "video") {
         onPlayVideo(item);
+      } else if (item.extension.toLowerCase() === ".m3u" || item.extension.toLowerCase() === ".m3u8") {
+        handlePlayM3u(item);
       } else if (item.mediaType === "audio") {
-        const audioTracks = filteredItems.filter((f) => f.mediaType === "audio" && !f.isDirectory);
+        const audioTracks = filteredItems.filter(
+          (f) =>
+            f.mediaType === "audio" &&
+            !f.isDirectory &&
+            f.extension.toLowerCase() !== ".m3u" &&
+            f.extension.toLowerCase() !== ".m3u8"
+        );
         const idx = audioTracks.findIndex((f) => f.id === item.id);
         playFolder(audioTracks, idx >= 0 ? idx : 0);
       } else {
@@ -220,6 +254,10 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
   const getItemIcon = (item: FileItem) => {
     if (item.isDirectory) return <Folder className="w-6 h-6 text-amber-500 fill-amber-500/20" />;
+    const ext = item.extension.toLowerCase();
+    if (ext === ".m3u" || ext === ".m3u8") {
+      return <ListMusic className="w-6 h-6 text-teal-400" />;
+    }
     switch (item.mediaType) {
       case "video": return <Film className="w-6 h-6 text-red-500" />;
       case "image": return <ImageIcon className="w-6 h-6 text-purple-400" />;
@@ -319,17 +357,21 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
             {/* Action Buttons: Play Folder, Playlists, New Folder, Upload */}
             <div className="flex items-center gap-2">
-              {filteredItems.filter((f) => f.mediaType === "audio" && !f.isDirectory).length > 0 && (
+              {filteredItems.filter((f) => f.mediaType === "audio" && !f.isDirectory && f.extension.toLowerCase() !== ".m3u" && f.extension.toLowerCase() !== ".m3u8").length > 0 && (
                 <button
                   onClick={() => {
-                    const audios = filteredItems.filter((f) => f.mediaType === "audio" && !f.isDirectory);
+                    const audios = filteredItems.filter(
+                      (f) => f.mediaType === "audio" && !f.isDirectory && f.extension.toLowerCase() !== ".m3u" && f.extension.toLowerCase() !== ".m3u8"
+                    );
                     playFolder(audios, 0);
                   }}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-md shadow-emerald-600/20 transition-all"
                   title="Tocar todas as músicas desta pasta em sequência"
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Tocar Pasta ({filteredItems.filter((f) => f.mediaType === "audio" && !f.isDirectory).length})</span>
+                  <span>
+                    Tocar Pasta ({filteredItems.filter((f) => f.mediaType === "audio" && !f.isDirectory && f.extension.toLowerCase() !== ".m3u" && f.extension.toLowerCase() !== ".m3u8").length})
+                  </span>
                 </button>
               )}
 
@@ -538,7 +580,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                       </div>
                     )}
 
-                    {/* Center play icon for video and audio */}
+                    {/* Center play icon for video, audio, and m3u playlist */}
                     {item.mediaType === "video" && (
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/20 transition-opacity pointer-events-none z-10">
                         <div className="w-10 h-10 rounded-full bg-red-600 text-white flex items-center justify-center shadow-lg transform group-hover:scale-110 transition-transform">
@@ -546,17 +588,27 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                         </div>
                       </div>
                     )}
-                    {item.mediaType === "audio" && (
+                    {item.mediaType === "audio" && (item.extension.toLowerCase() === ".m3u" || item.extension.toLowerCase() === ".m3u8") ? (
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/20 transition-opacity pointer-events-none z-10">
+                        <div className="w-10 h-10 rounded-full bg-teal-600 text-white flex items-center justify-center shadow-lg transform group-hover:scale-110 transition-transform">
+                          {parsingM3uId === item.id ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Play className="w-4 h-4 fill-white ml-0.5" />
+                          )}
+                        </div>
+                      </div>
+                    ) : item.mediaType === "audio" ? (
                       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/20 transition-opacity pointer-events-none z-10">
                         <div className="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center shadow-lg transform group-hover:scale-110 transition-transform">
                           <Play className="w-4 h-4 fill-white ml-0.5" />
                         </div>
                       </div>
-                    )}
+                    ) : null}
 
                     {/* Quick action buttons on hover (z-20 to stay firmly above any overlay) */}
                     <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-20">
-                      {item.mediaType === "audio" && (
+                      {item.mediaType === "audio" && item.extension.toLowerCase() !== ".m3u" && item.extension.toLowerCase() !== ".m3u8" && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -613,11 +665,24 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
                   {/* Card Info */}
                   <div className="p-3">
-                    <h5 className="text-xs font-semibold text-white truncate" title={item.name}>
-                      {item.name}
-                    </h5>
+                    <div className="flex items-center gap-1.5 truncate">
+                      {(item.extension.toLowerCase() === ".m3u" || item.extension.toLowerCase() === ".m3u8") && (
+                        <span className="px-1.5 py-0.2 bg-teal-500/20 text-teal-300 font-mono text-[9px] font-bold rounded flex-none">
+                          M3U
+                        </span>
+                      )}
+                      <h5 className="text-xs font-semibold text-white truncate" title={item.name}>
+                        {item.name}
+                      </h5>
+                    </div>
                     <div className="flex items-center justify-between text-[10px] text-neutral-500 font-mono mt-1">
-                      <span>{item.isDirectory ? "Pasta" : formatBytes(item.size)}</span>
+                      <span>
+                        {item.isDirectory
+                          ? "Pasta"
+                          : (item.extension.toLowerCase() === ".m3u" || item.extension.toLowerCase() === ".m3u8")
+                          ? "Playlist"
+                          : formatBytes(item.size)}
+                      </span>
                       <span>{formatDate(item.updatedAt).split(" ")[0]}</span>
                     </div>
                   </div>
@@ -645,19 +710,43 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                     >
                       <td className="p-3.5 flex items-center gap-3">
                         <div className="flex-none">{getItemIcon(item)}</div>
-                        <span className="font-semibold text-white truncate max-w-xs sm:max-w-md group-hover:text-red-400 transition-colors">
-                          {item.name}
-                        </span>
+                        <div className="flex items-center gap-2 truncate max-w-xs sm:max-w-md">
+                          {(item.extension.toLowerCase() === ".m3u" || item.extension.toLowerCase() === ".m3u8") && (
+                            <span className="px-1.5 py-0.2 bg-teal-500/20 text-teal-300 font-mono text-[9px] font-bold rounded flex-none">
+                              PLAYLIST M3U
+                            </span>
+                          )}
+                          <span className="font-semibold text-white truncate group-hover:text-emerald-400 transition-colors">
+                            {item.name}
+                          </span>
+                        </div>
                       </td>
                       <td className="p-3.5 font-mono hidden sm:table-cell">
-                        {item.isDirectory ? "-" : formatBytes(item.size)}
+                        {item.isDirectory
+                          ? "-"
+                          : (item.extension.toLowerCase() === ".m3u" || item.extension.toLowerCase() === ".m3u8")
+                          ? "Playlist"
+                          : formatBytes(item.size)}
                       </td>
                       <td className="p-3.5 font-mono hidden md:table-cell">
                         {formatDate(item.updatedAt)}
                       </td>
                       <td className="p-3.5 text-right">
                         <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                          {item.mediaType === "audio" && (
+                          {(item.extension.toLowerCase() === ".m3u" || item.extension.toLowerCase() === ".m3u8") ? (
+                            <button
+                              onClick={() => handlePlayM3u(item)}
+                              disabled={parsingM3uId === item.id}
+                              className="p-1.5 hover:bg-teal-950/60 rounded-lg text-teal-400 hover:text-teal-300 transition-colors"
+                              title="Tocar Playlist M3U"
+                            >
+                              {parsingM3uId === item.id ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Play className="w-3.5 h-3.5 fill-current" />
+                              )}
+                            </button>
+                          ) : item.mediaType === "audio" ? (
                             <button
                               onClick={() => {
                                 setSelectedTrackForPlaylist(item);
@@ -668,7 +757,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                             >
                               <ListPlus className="w-3.5 h-3.5" />
                             </button>
-                          )}
+                          ) : null}
                           {!item.isDirectory && (
                             <a
                               href={item.downloadUrl}

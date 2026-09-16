@@ -344,12 +344,28 @@ export const fileRepo = {
       db.run(`DELETE FROM files WHERE storage_id = ?`, [storageId]);
       return;
     }
-    // Batch delete in reasonable chunks or temporary table
-    const placeholders = existingPaths.map(() => "?").join(",");
-    db.run(
-      `DELETE FROM files WHERE storage_id = ? AND full_path NOT IN (${placeholders})`,
-      [storageId, ...existingPaths]
-    );
+
+    const existingSet = new Set(existingPaths);
+    const dbRows = db.query(`SELECT id, full_path FROM files WHERE storage_id = ?`).all(storageId) as {
+      id: string;
+      full_path: string;
+    }[];
+
+    const idsToDelete: string[] = [];
+    for (const row of dbRows) {
+      if (!existingSet.has(row.full_path)) {
+        idsToDelete.push(row.id);
+      }
+    }
+
+    if (idsToDelete.length > 0) {
+      const CHUNK_SIZE = 500;
+      for (let i = 0; i < idsToDelete.length; i += CHUNK_SIZE) {
+        const chunk = idsToDelete.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => "?").join(",");
+        db.run(`DELETE FROM files WHERE id IN (${placeholders})`, chunk);
+      }
+    }
   },
 
   deleteFile: (id: string) => {

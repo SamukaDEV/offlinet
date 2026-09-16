@@ -1,6 +1,8 @@
 import fs from "fs";
 import path from "path";
 import { fileRepo, storageRepo, watchRepo } from "../db";
+import { getMimeType } from "../streamer";
+import { generateFileId } from "../scanner";
 import type { CatalogCategory, CatalogData, FileItem } from "../../types";
 
 export async function handleMediaRoutes(req: Request, url: URL): Promise<Response | null> {
@@ -138,7 +140,121 @@ export async function handleMediaRoutes(req: Request, url: URL): Promise<Respons
     });
   }
 
+  // GET /api/media/parse-m3u/:id - Parse .m3u / .m3u8 playlist file
+  if (pathname.startsWith("/api/media/parse-m3u/") && method === "GET") {
+    const id = pathname.replace("/api/media/parse-m3u/", "");
+    const file = fileRepo.getById(id);
+    if (!file || !fs.existsSync(file.fullPath)) {
+      return Response.json({ success: false, error: "Arquivo de playlist não encontrado" }, { status: 404 });
+    }
+
+    const result = parseM3u(file);
+    return Response.json({ success: true, ...result });
+  }
+
   return null;
+}
+
+function parseM3u(file: FileItem): {
+  name: string;
+  tracks: FileItem[];
+  totalEntries: number;
+  totalFound: number;
+} {
+  const content = fs.readFileSync(file.fullPath, "utf-8");
+  const baseDir = path.dirname(file.fullPath);
+  const lines = content.split(/\r?\n/);
+
+  const playlistName = path.basename(file.name, path.extname(file.name));
+  const tracks: FileItem[] = [];
+  let totalEntries = 0;
+  let pendingDuration = 0;
+
+  for (let rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (line.startsWith("#EXTINF:")) {
+      // #EXTINF:180,Artist - Title or #EXTINF:180.5,Title
+      const meta = line.substring(8).split(",")[0].trim();
+      const dur = parseFloat(meta);
+      if (!isNaN(dur) && dur > 0) {
+        pendingDuration = Math.round(dur);
+      }
+      continue;
+    }
+
+    if (!line || line.startsWith("#")) continue;
+
+    totalEntries++;
+
+    let candidatePath = line;
+    if (!path.isAbsolute(candidatePath)) {
+      candidatePath = path.resolve(baseDir, candidatePath);
+    }
+    candidatePath = path.normalize(candidatePath);
+
+    if (!fs.existsSync(candidatePath)) {
+      const alt = path.join(baseDir, path.basename(line));
+      if (fs.existsSync(alt)) candidatePath = alt;
+    }
+
+    if (fs.existsSync(candidatePath)) {
+      let item = fileRepo.getByFullPath(candidatePath);
+      if (!item) {
+        const altSlash = candidatePath.replace(/\\/g, "/");
+        item = fileRepo.getByFullPath(altSlash);
+      }
+
+      if (!item) {
+        const fileName = path.basename(candidatePath);
+        const roots = storageRepo.getAll();
+        const root = roots.find((r) => candidatePath.toLowerCase().startsWith(r.path.toLowerCase()));
+        if (root) {
+          const rel = path.relative(root.path, candidatePath).replace(/\\/g, "/");
+          const parent = path.dirname(rel).replace(/\\/g, "/");
+          const ext = path.extname(fileName).toLowerCase();
+          const stat = fs.statSync(candidatePath);
+          const genId = generateFileId(root.id, rel);
+          fileRepo.upsert({
+            id: genId,
+            storageId: root.id,
+            relativePath: rel,
+            fullPath: candidatePath,
+            name: fileName,
+            extension: ext,
+            size: stat.size,
+            isDirectory: false,
+            mediaType: "audio",
+            mimeType: getMimeType(candidatePath),
+            parentPath: parent === "." ? "/" : parent,
+            duration: pendingDuration > 0 ? pendingDuration : 0,
+            updatedAt: stat.mtimeMs,
+          });
+          item = fileRepo.getById(genId);
+        }
+      }
+
+      if (item) {
+        if ((!item.duration || item.duration === 0) && pendingDuration > 0) {
+          fileRepo.updateMetadata(item.id, { duration: pendingDuration });
+          item.duration = pendingDuration;
+        }
+
+        if (!tracks.some((t) => t.id === item!.id)) {
+          tracks.push(item);
+        }
+      }
+    }
+
+    pendingDuration = 0;
+  }
+
+  return {
+    name: playlistName,
+    tracks,
+    totalEntries,
+    totalFound: tracks.length,
+  };
 }
 
 function findSubtitlePath(videoPath: string): string | null {

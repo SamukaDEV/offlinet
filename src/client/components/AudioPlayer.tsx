@@ -321,6 +321,7 @@ export const AudioPlayer: React.FC = () => {
           <div className="flex-1 overflow-y-auto space-y-1 pr-1">
             {queue.map((track, idx) => {
               const isCurrent = idx === queueIndex;
+              const trackDur = isCurrent && duration > 0 ? duration : (track.duration || 0);
               return (
                 <div
                   key={`${track.id}-${idx}`}
@@ -342,8 +343,8 @@ export const AudioPlayer: React.FC = () => {
                     <p className="truncate text-white font-medium">{track.name}</p>
                     <p className="text-[10px] text-neutral-400">{track.storageName}</p>
                   </div>
-                  <div className="text-[11px] text-neutral-400 flex-none">
-                    {formatDuration(track.duration || 0)}
+                  <div className="text-[11px] text-neutral-400 flex-none font-mono">
+                    {trackDur > 0 ? formatDuration(trackDur) : "--:--"}
                   </div>
                 </div>
               );

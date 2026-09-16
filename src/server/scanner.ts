@@ -3,12 +3,12 @@ import path from "path";
 import crypto from "crypto";
 import { fileRepo, storageRepo } from "./db";
 import { getMimeType } from "./streamer";
-import { enqueueVideoThumbnail } from "./thumbnail";
+import { enqueueVideoThumbnail, enqueueAudioProbe } from "./thumbnail";
 import type { MediaType, FileItem } from "../types";
 
 const VIDEO_EXTS = new Set([".mp4", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".m4v", ".flv", ".ts"]);
 const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg"]);
-const AUDIO_EXTS = new Set([".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".wma"]);
+const AUDIO_EXTS = new Set([".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".wma", ".m3u", ".m3u8"]);
 const DOC_EXTS = new Set([".pdf", ".txt", ".docx", ".xlsx", ".pptx", ".csv", ".md", ".json", ".zip", ".rar", ".7z", ".tar", ".gz", ".iso"]);
 
 export function getMediaType(ext: string): MediaType {
@@ -93,6 +93,24 @@ export async function scanStorageRoot(rootId: string): Promise<{ indexed: number
             size: stat.size,
             isDirectory: false,
             mediaType: "video",
+            mimeType: getMimeType(fullPath),
+            parentPath,
+            updatedAt: stat.mtimeMs,
+          });
+        }
+
+        // If it is an audio file (excluding playlist text files), queue duration probing
+        if (!isDir && mediaType === "audio" && ext !== ".m3u" && ext !== ".m3u8") {
+          enqueueAudioProbe({
+            id: fileId,
+            storageId: root.id,
+            relativePath,
+            fullPath,
+            name: entry.name,
+            extension: ext,
+            size: stat.size,
+            isDirectory: false,
+            mediaType: "audio",
             mimeType: getMimeType(fullPath),
             parentPath,
             updatedAt: stat.mtimeMs,
