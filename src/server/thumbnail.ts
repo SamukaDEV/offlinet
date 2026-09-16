@@ -1,17 +1,20 @@
 import fs from "fs";
 import path from "path";
-import { DATA_PATHS } from "./db";
+import ffmpegPath from "ffmpeg-static";
+import { DATA_PATHS, fileRepo } from "./db";
 import type { FileItem } from "../types";
 
-// Check if ffmpeg is accessible
+// Detect ffmpeg executable
 let ffmpegCmd: string | null = null;
-try {
-  const check = Bun.spawnSync(["ffmpeg", "-version"]);
-  if (check.exitCode === 0) {
-    ffmpegCmd = "ffmpeg";
+if (ffmpegPath && fs.existsSync(ffmpegPath)) {
+  ffmpegCmd = ffmpegPath;
+} else {
+  try {
+    const check = Bun.spawnSync(["ffmpeg", "-version"]);
+    if (check.exitCode === 0) ffmpegCmd = "ffmpeg";
+  } catch {
+    ffmpegCmd = null;
   }
-} catch {
-  ffmpegCmd = null;
 }
 
 export function isFfmpegAvailable(): boolean {
@@ -48,16 +51,83 @@ export function findLocalCover(videoFilePath: string): string | null {
   return null;
 }
 
+export interface VideoMetadata {
+  duration: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Probes video duration and dimensions via ffmpeg
+ */
+export function probeVideo(videoPath: string): VideoMetadata {
+  if (!ffmpegCmd) return { duration: 0, width: 0, height: 0 };
+
+  try {
+    const proc = Bun.spawnSync([ffmpegCmd, "-i", videoPath], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+
+    const output = proc.stderr.toString();
+    let duration = 0;
+    let width = 0;
+    let height = 0;
+
+    // Match Duration: 01:23:45.67
+    const durMatch = output.match(/Duration:\s*(\d{2}):(\d{2}):(\d{2}\.?\d*)/);
+    if (durMatch) {
+      const h = parseFloat(durMatch[1]);
+      const m = parseFloat(durMatch[2]);
+      const s = parseFloat(durMatch[3]);
+      duration = Math.round(h * 3600 + m * 60 + s);
+    }
+
+    // Match Stream ... Video: ... 1920x1080
+    const dimMatch = output.match(/Stream.*Video:.*,\s*(\d{3,5})x(\d{3,5})/);
+    if (dimMatch) {
+      width = parseInt(dimMatch[1], 10);
+      height = parseInt(dimMatch[2], 10);
+    }
+
+    return { duration, width, height };
+  } catch (err) {
+    console.error("[Thumbnail] Erro ao obter metadados do vídeo:", err);
+    return { duration: 0, width: 0, height: 0 };
+  }
+}
+
+/**
+ * Extracts a high quality frame thumbnail from the video file
+ */
 export async function generateFfmpegThumbnail(videoPath: string, destPath: string): Promise<boolean> {
   if (!ffmpegCmd) return false;
 
   try {
+    // 1. First probe metadata to select the best frame position
+    const { duration } = probeVideo(videoPath);
+
+    // Pick timestamp (avoiding black intros at 00:00:00)
+    let seekTime = "00:00:15";
+    if (duration > 180) {
+      // For movies longer than 3 minutes, pick around 5-10% of duration (e.g. 1m to 2m in)
+      const targetSec = Math.min(Math.floor(duration * 0.08), 120);
+      const m = Math.floor(targetSec / 60).toString().padStart(2, "0");
+      const s = Math.floor(targetSec % 60).toString().padStart(2, "0");
+      seekTime = `00:${m}:${s}`;
+    } else if (duration > 5 && duration <= 15) {
+      seekTime = "00:00:02";
+    } else if (duration > 0 && duration <= 5) {
+      seekTime = "00:00:00.500";
+    }
+
+    // Fast keyframe seek before -i for instant seeking without decoding whole video
     const proc = Bun.spawn([
       ffmpegCmd,
-      "-ss", "00:00:15",
+      "-ss", seekTime,
       "-i", videoPath,
       "-vframes", "1",
-      "-q:v", "3",
+      "-q:v", "2",
       "-vf", "scale=640:-1",
       "-y",
       destPath,
@@ -67,10 +137,103 @@ export async function generateFfmpegThumbnail(videoPath: string, destPath: strin
     });
 
     await proc.exited;
-    return fs.existsSync(destPath);
+
+    if (fs.existsSync(destPath) && fs.statSync(destPath).size > 100) {
+      return true;
+    }
+
+    // Fallback: seek to beginning (00:00:01) if chosen timestamp failed
+    const procFallback = Bun.spawn([
+      ffmpegCmd,
+      "-ss", "00:00:01",
+      "-i", videoPath,
+      "-vframes", "1",
+      "-q:v", "2",
+      "-vf", "scale=640:-1",
+      "-y",
+      destPath,
+    ], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+
+    await procFallback.exited;
+    return fs.existsSync(destPath) && fs.statSync(destPath).size > 100;
   } catch (err) {
     console.error("[Thumbnail] Erro ao extrair frame via ffmpeg:", err);
     return false;
+  }
+}
+
+/**
+ * Ensures a video has a thumbnail on disk and updates duration/dimensions in DB
+ */
+export async function ensureVideoThumbnail(file: FileItem): Promise<string | null> {
+  const cachedThumb = getCachedThumbnailPath(file.id);
+
+  // If metadata is missing in DB, probe it
+  if (!file.duration || !file.width) {
+    const meta = probeVideo(file.fullPath);
+    if (meta.duration > 0 || meta.width > 0) {
+      fileRepo.updateMetadata(file.id, meta);
+    }
+  }
+
+  // If already in cache
+  if (fs.existsSync(cachedThumb)) {
+    return cachedThumb;
+  }
+
+  // Check local poster in directory
+  const localCover = findLocalCover(file.fullPath);
+  if (localCover) {
+    return localCover;
+  }
+
+  if (isFfmpegAvailable()) {
+    const success = await generateFfmpegThumbnail(file.fullPath, cachedThumb);
+    if (success) {
+      return cachedThumb;
+    }
+  }
+
+  return null;
+}
+
+// Background Thumbnail Extraction Queue
+const thumbnailQueue: FileItem[] = [];
+let isProcessingQueue = false;
+
+export function enqueueVideoThumbnail(file: FileItem) {
+  if (file.mediaType !== "video" || file.isDirectory) return;
+  const cached = getCachedThumbnailPath(file.id);
+  if (fs.existsSync(cached)) return;
+
+  // Avoid duplicates
+  if (!thumbnailQueue.some((f) => f.id === file.id)) {
+    thumbnailQueue.push(file);
+  }
+
+  processQueue();
+}
+
+async function processQueue() {
+  if (isProcessingQueue || thumbnailQueue.length === 0) return;
+  isProcessingQueue = true;
+
+  try {
+    while (thumbnailQueue.length > 0) {
+      const file = thumbnailQueue.shift();
+      if (!file) break;
+
+      try {
+        await ensureVideoThumbnail(file);
+      } catch (err) {
+        console.error(`[Thumbnail] Falha ao processar miniatura de ${file.name}:`, err);
+      }
+    }
+  } finally {
+    isProcessingQueue = false;
   }
 }
 

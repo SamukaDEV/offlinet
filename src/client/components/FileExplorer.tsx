@@ -19,11 +19,13 @@ import {
   Search,
   Play,
   Eye,
+  FolderInput,
 } from "lucide-react";
 import type { FileItem, StorageRoot, MediaType } from "../../types";
 import { formatBytes, formatDate } from "../utils/format";
 import { FileUploader } from "./FileUploader";
 import { MediaPreviewModal } from "./MediaPreviewModal";
+import { MoveModal } from "./MoveModal";
 
 interface FileExplorerProps {
   storageRoots: StorageRoot[];
@@ -50,6 +52,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   // Modals state
   const [showUploader, setShowUploader] = useState(false);
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
+  const [movingItem, setMovingItem] = useState<FileItem | null>(null);
 
   // New folder & Rename prompts
   const [newFolderPrompt, setNewFolderPrompt] = useState(false);
@@ -513,6 +516,16 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          setMovingItem(item);
+                        }}
+                        className="p-1.5 rounded-lg bg-black/70 hover:bg-neutral-800 text-neutral-200 hover:text-white backdrop-blur-sm"
+                        title="Mover para outra pasta ou disco"
+                      >
+                        <FolderInput className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
                           setRenamingItem(item);
                           setNewName(item.name);
                         }}
@@ -597,6 +610,13 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                             </a>
                           )}
                           <button
+                            onClick={() => setMovingItem(item)}
+                            className="p-1.5 hover:bg-neutral-800 rounded-lg text-neutral-400 hover:text-white"
+                            title="Mover para outra pasta ou disco"
+                          >
+                            <FolderInput className="w-3.5 h-3.5" />
+                          </button>
+                          <button
                             onClick={() => {
                               setRenamingItem(item);
                               setNewName(item.name);
@@ -643,6 +663,19 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
         <MediaPreviewModal
           file={previewFile}
           onClose={() => setPreviewFile(null)}
+        />
+      )}
+
+      {/* Move File / Folder Modal */}
+      {movingItem && (
+        <MoveModal
+          file={movingItem}
+          storageRoots={storageRoots}
+          onClose={() => setMovingItem(null)}
+          onMoveSuccess={() => {
+            loadDirectory(currentStorageId, currentPath);
+            onRefreshRoots();
+          }}
         />
       )}
     </div>

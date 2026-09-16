@@ -3,7 +3,8 @@ import path from "path";
 import crypto from "crypto";
 import { fileRepo, storageRepo } from "./db";
 import { getMimeType } from "./streamer";
-import type { MediaType } from "../types";
+import { enqueueVideoThumbnail } from "./thumbnail";
+import type { MediaType, FileItem } from "../types";
 
 const VIDEO_EXTS = new Set([".mp4", ".mkv", ".webm", ".mov", ".avi", ".wmv", ".m4v", ".flv", ".ts"]);
 const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg"]);
@@ -63,6 +64,7 @@ export async function scanStorageRoot(rootId: string): Promise<{ indexed: number
         const isDir = entry.isDirectory();
         const ext = isDir ? "" : path.extname(entry.name).toLowerCase();
         const fileId = generateFileId(root.id, relativePath);
+        const mediaType = isDir ? "other" : getMediaType(ext);
 
         fileRepo.upsert({
           id: fileId,
@@ -73,11 +75,29 @@ export async function scanStorageRoot(rootId: string): Promise<{ indexed: number
           extension: ext,
           size: isDir ? 0 : stat.size,
           isDirectory: isDir,
-          mediaType: isDir ? "other" : getMediaType(ext),
+          mediaType,
           mimeType: isDir ? "directory" : getMimeType(fullPath),
           parentPath,
           updatedAt: stat.mtimeMs,
         });
+
+        // If it is a video, queue frame thumbnail generation
+        if (!isDir && mediaType === "video") {
+          enqueueVideoThumbnail({
+            id: fileId,
+            storageId: root.id,
+            relativePath,
+            fullPath,
+            name: entry.name,
+            extension: ext,
+            size: stat.size,
+            isDirectory: false,
+            mediaType: "video",
+            mimeType: getMimeType(fullPath),
+            parentPath,
+            updatedAt: stat.mtimeMs,
+          });
+        }
 
         indexed++;
 

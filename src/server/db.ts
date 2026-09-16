@@ -261,6 +261,23 @@ export const fileRepo = {
     return rows.map(mapDbRowToFileItem);
   },
 
+  listFolders: (storageId: string): { relativePath: string; name: string }[] => {
+    const rows = db.query(`
+      SELECT relative_path, name
+      FROM files
+      WHERE storage_id = ? AND is_directory = 1
+      ORDER BY relative_path ASC
+    `).all(storageId) as any[];
+
+    return [
+      { relativePath: "/", name: "Raiz do Disco" },
+      ...rows.map((r) => ({
+        relativePath: r.relative_path,
+        name: r.name,
+      })),
+    ];
+  },
+
   listMediaVideos: (limit = 100): FileItem[] => {
     const rows = db.query(`
       SELECT 
@@ -320,6 +337,22 @@ export const fileRepo = {
 
   deleteFile: (id: string) => {
     db.run(`DELETE FROM files WHERE id = ?`, [id]);
+  },
+
+  updateMetadata: (id: string, metadata: { duration?: number; width?: number; height?: number }) => {
+    db.run(
+      `UPDATE files SET 
+         duration = CASE WHEN ? IS NOT NULL THEN ? ELSE duration END,
+         width = CASE WHEN ? IS NOT NULL THEN ? ELSE width END,
+         height = CASE WHEN ? IS NOT NULL THEN ? ELSE height END
+       WHERE id = ?`,
+      [
+        metadata.duration ?? null, metadata.duration ?? null,
+        metadata.width ?? null, metadata.width ?? null,
+        metadata.height ?? null, metadata.height ?? null,
+        id
+      ]
+    );
   },
 
   getStats: () => {

@@ -9,6 +9,7 @@ import {
   findLocalCover,
   getCachedThumbnailPath,
   generateFfmpegThumbnail,
+  ensureVideoThumbnail,
   generateSvgPoster,
   isFfmpegAvailable,
   saveUploadedThumbnail,
@@ -159,11 +160,11 @@ const server = Bun.serve({
           }));
         }
 
-        // D. Try ffmpeg if available
+        // D. Extract frame via FFmpeg on demand (JIT)
         if (isFfmpegAvailable()) {
-          const generated = await generateFfmpegThumbnail(file.fullPath, cachedThumb);
-          if (generated && fs.existsSync(cachedThumb)) {
-            return withCors(new Response(Bun.file(cachedThumb), {
+          const generatedPath = await ensureVideoThumbnail(file);
+          if (generatedPath && fs.existsSync(generatedPath)) {
+            return withCors(new Response(Bun.file(generatedPath), {
               headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" },
             }));
           }

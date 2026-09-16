@@ -2,9 +2,10 @@ import fs from "fs";
 import path from "path";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
-import { fileRepo, storageRepo } from "../db";
-import { scanStorageRoot } from "../scanner";
+import { fileRepo, storageRepo, db } from "../db";
+import { scanStorageRoot, generateFileId } from "../scanner";
 import { getMimeType } from "../streamer";
+import { getCachedThumbnailPath } from "../thumbnail";
 
 export async function handleFilesRoutes(req: Request, url: URL): Promise<Response | null> {
   const pathname = url.pathname;
@@ -49,7 +50,8 @@ export async function handleFilesRoutes(req: Request, url: URL): Promise<Respons
     }
 
     // List files from database in this folder
-    const cleanParentPath = parentPath === "/" ? "/" : parentPath.replace(/\\/g, "/");
+    const rawClean = parentPath.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    const cleanParentPath = rawClean === "" ? "/" : rawClean;
     let items = fileRepo.listByFolder(storageId, cleanParentPath);
 
     // Build breadcrumbs
@@ -284,6 +286,105 @@ export async function handleFilesRoutes(req: Request, url: URL): Promise<Respons
 
     fileRepo.deleteFile(id);
     return Response.json({ success: true });
+  }
+
+  // GET /api/files/folders?storageId=... - List available directories in a storage volume
+  if (pathname === "/api/files/folders" && method === "GET") {
+    const storageId = url.searchParams.get("storageId");
+    if (!storageId) {
+      return Response.json({ success: false, error: "storageId é obrigatório" }, { status: 400 });
+    }
+    const folders = fileRepo.listFolders(storageId);
+    return Response.json({ success: true, folders });
+  }
+
+  // POST /api/files/move - Move file or folder between directories or disks
+  if (pathname === "/api/files/move" && method === "POST") {
+    try {
+      const body = await req.json();
+      const { fileId, targetStorageId, targetParentPath } = body;
+
+      if (!fileId || !targetStorageId) {
+        return Response.json({ success: false, error: "fileId e targetStorageId são obrigatórios" }, { status: 400 });
+      }
+
+      const file = fileRepo.getById(fileId);
+      if (!file || !fs.existsSync(file.fullPath)) {
+        return Response.json({ success: false, error: "Arquivo ou pasta de origem não encontrado" }, { status: 404 });
+      }
+
+      const targetStorage = storageRepo.getById(targetStorageId);
+      if (!targetStorage || !fs.existsSync(targetStorage.path)) {
+        return Response.json({ success: false, error: "Volume de destino não encontrado no servidor" }, { status: 404 });
+      }
+
+      const cleanTargetFolder = (targetParentPath || "").replace(/^\/+|\/+$/g, "");
+      const destDir = cleanTargetFolder ? path.join(targetStorage.path, cleanTargetFolder) : targetStorage.path;
+
+      if (!fs.existsSync(destDir)) {
+        fs.mkdirSync(destDir, { recursive: true });
+      }
+
+      const destFilePath = path.join(destDir, file.name);
+
+      if (destFilePath.toLowerCase() === file.fullPath.toLowerCase()) {
+        return Response.json({ success: true, message: "O arquivo já se encontra neste local" });
+      }
+
+      if (fs.existsSync(destFilePath)) {
+        return Response.json({ success: false, error: "Já existe um arquivo ou pasta com esse nome no destino" }, { status: 400 });
+      }
+
+      // Execute Move (Atomic rename if same drive, or copy + unlink if cross-drive e.g. C: -> D:)
+      try {
+        fs.renameSync(file.fullPath, destFilePath);
+      } catch (err: any) {
+        if (err.code === "EXDEV" || err.message?.includes("cross-device")) {
+          if (file.isDirectory) {
+            fs.cpSync(file.fullPath, destFilePath, { recursive: true });
+            fs.rmSync(file.fullPath, { recursive: true, force: true });
+          } else {
+            fs.copyFileSync(file.fullPath, destFilePath);
+            fs.unlinkSync(file.fullPath);
+          }
+        } else {
+          throw err;
+        }
+      }
+
+      // Calculate new relative path & file ID
+      const newRelativePath = cleanTargetFolder ? `${cleanTargetFolder}/${file.name}`.replace(/\\/g, "/") : file.name;
+      const newFileId = generateFileId(targetStorage.id, newRelativePath);
+
+      if (newFileId !== file.id) {
+        // Transfer cached thumbnail if exists
+        const oldThumb = getCachedThumbnailPath(file.id);
+        const newThumb = getCachedThumbnailPath(newFileId);
+        if (fs.existsSync(oldThumb)) {
+          try { fs.renameSync(oldThumb, newThumb); } catch {}
+        }
+
+        // Transfer watch history
+        try {
+          db.run(`UPDATE watch_history SET file_id = ? WHERE file_id = ?`, [newFileId, file.id]);
+        } catch {}
+      }
+
+      // Re-scan both source and target roots
+      await scanStorageRoot(file.storageId);
+      if (targetStorage.id !== file.storageId) {
+        await scanStorageRoot(targetStorage.id);
+      }
+
+      return Response.json({
+        success: true,
+        newFileId,
+        newPath: destFilePath,
+      });
+    } catch (err: any) {
+      console.error("[Move] Erro ao mover item:", err);
+      return Response.json({ success: false, error: err.message }, { status: 500 });
+    }
   }
 
   return null;

@@ -95,12 +95,17 @@ export const App: React.FC = () => {
       {detailMovie && (
         <MovieDetailModal
           file={detailMovie}
+          storageRoots={storageRoots}
           onClose={() => setDetailMovie(null)}
           onPlay={(movie) => {
             setDetailMovie(null);
             setActiveVideo(movie);
           }}
           onFileDeleted={() => {
+            setDetailMovie(null);
+            loadSystemInfo();
+          }}
+          onFileMoved={() => {
             setDetailMovie(null);
             loadSystemInfo();
           }}

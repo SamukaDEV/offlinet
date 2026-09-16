@@ -19,6 +19,25 @@ export function formatSeconds(seconds: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
+export function formatHumanDuration(seconds?: number): string {
+  if (!seconds || seconds <= 0) return "";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m} min`;
+}
+
+export function getResolutionBadge(width?: number, height?: number): string | null {
+  if (!width && !height) return null;
+  const w = width || 0;
+  const h = height || 0;
+  if (w >= 3800 || h >= 2100) return "4K";
+  if (w >= 1900 || h >= 1000) return "1080p";
+  if (w >= 1200 || h >= 700) return "720p";
+  if (w > 0 || h > 0) return "SD";
+  return null;
+}
+
 export function formatDate(timestamp: number): string {
   if (!timestamp) return "-";
   const date = new Date(timestamp);

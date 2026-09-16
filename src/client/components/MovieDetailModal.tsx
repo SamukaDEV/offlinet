@@ -10,22 +10,28 @@ import {
   Folder,
   RotateCcw,
   CheckCircle,
+  FolderInput,
 } from "lucide-react";
-import type { FileItem } from "../../types";
+import type { FileItem, StorageRoot } from "../../types";
 import { formatBytes, formatSeconds, formatDate } from "../utils/format";
+import { MoveModal } from "./MoveModal";
 
 interface MovieDetailModalProps {
   file: FileItem | null;
+  storageRoots?: StorageRoot[];
   onClose: () => void;
   onPlay: (file: FileItem) => void;
   onFileDeleted?: (fileId: string) => void;
+  onFileMoved?: () => void;
 }
 
 export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
   file,
+  storageRoots,
   onClose,
   onPlay,
   onFileDeleted,
+  onFileMoved,
 }) => {
   const [detailData, setDetailData] = useState<{
     siblings: FileItem[];
@@ -34,6 +40,7 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
 
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showMoveModal, setShowMoveModal] = useState(false);
 
   useEffect(() => {
     if (!file) return;
@@ -128,6 +135,15 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
               <Download className="w-4 h-4" />
               <span>Baixar</span>
             </a>
+
+            <button
+              onClick={() => setShowMoveModal(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-neutral-800/90 hover:bg-neutral-700 text-neutral-200 hover:text-white text-sm font-semibold rounded-xl backdrop-blur-md transition-colors"
+              title="Mover para outro disco ou pasta"
+            >
+              <FolderInput className="w-4 h-4" />
+              <span>Mover</span>
+            </button>
           </div>
         </div>
 
@@ -247,6 +263,19 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      {showMoveModal && (
+        <MoveModal
+          file={file}
+          storageRoots={storageRoots || []}
+          onClose={() => setShowMoveModal(false)}
+          onMoveSuccess={() => {
+            setShowMoveModal(false);
+            onClose();
+            onFileMoved?.();
+          }}
+        />
+      )}
     </div>
   );
 };
