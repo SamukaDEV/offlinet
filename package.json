@@ -7,7 +7,7 @@
     "dev": "bun run --hot src/server/index.ts",
     "build:css": "bunx @tailwindcss/cli -i ./src/client/index.css -o ./dist/index.css --minify",
     "build:js": "bun build ./src/client/main.tsx --outdir ./dist --entry-naming [name].[ext] --minify",
-    "build": "bun run build:css && bun run build:js && bun -e \"require('fs').copyFileSync('index.html', 'dist/index.html')\"",
+    "build": "bun run build:css && bun run build:js && bun -e \"require('fs').copyFileSync('src/client/index.html', 'dist/index.html'); require('fs').cpSync('node_modules/monaco-editor/min/vs', 'dist/monaco/vs', { recursive: true });\"",
     "server": "bun run src/server/index.ts",
     "start": "bun run src/server/index.ts"
   },
@@ -24,6 +24,7 @@
     "routerun": "^1.0.14"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
     "@types/bun": "^1.2.4",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",

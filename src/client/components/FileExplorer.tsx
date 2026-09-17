@@ -22,13 +22,17 @@ import {
   FolderInput,
   ListMusic,
   ListPlus,
+  FileCode,
+  Code,
 } from "lucide-react";
 import type { FileItem, StorageRoot, MediaType } from "../../types";
 import { formatBytes, formatDate } from "../utils/format";
+import { canOpenAsText } from "../utils/codeLanguages";
 import { FileUploader } from "./FileUploader";
 import { MediaPreviewModal } from "./MediaPreviewModal";
 import { MoveModal } from "./MoveModal";
 import { PlaylistModal } from "./PlaylistModal";
+import { MonacoTextEditorModal } from "./MonacoTextEditorModal";
 import { useAudio } from "../context/AudioContext";
 
 interface FileExplorerProps {
@@ -56,6 +60,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   // Modals state
   const [showUploader, setShowUploader] = useState(false);
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
+  const [editingTextFile, setEditingTextFile] = useState<FileItem | null>(null);
   const [movingItem, setMovingItem] = useState<FileItem | null>(null);
   const [showPlaylistModal, setShowPlaylistModal] = useState(false);
   const [selectedTrackForPlaylist, setSelectedTrackForPlaylist] = useState<FileItem | null>(null);
@@ -88,13 +93,47 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
     }
   };
 
-  // New folder & Rename prompts
+  // New folder, New file & Rename prompts
   const [newFolderPrompt, setNewFolderPrompt] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
+  const [newFilePrompt, setNewFilePrompt] = useState(false);
+  const [newFileName, setNewFileName] = useState("");
   const [renamingItem, setRenamingItem] = useState<FileItem | null>(null);
   const [newName, setNewName] = useState("");
 
   const currentStorage = storageRoots.find((r) => r.id === currentStorageId) || null;
+
+  // Create new text/code file
+  const handleCreateFile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentStorageId || !newFileName.trim()) return;
+
+    try {
+      const res = await fetch("/api/files/create-file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          storageId: currentStorageId,
+          parentPath: currentPath,
+          fileName: newFileName.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setNewFileName("");
+        setNewFilePrompt(false);
+        await loadDirectory(currentStorageId, currentPath);
+        if (data.file) {
+          setEditingTextFile(data.file);
+        }
+      } else {
+        alert(data.error || "Erro ao criar arquivo");
+      }
+    } catch (err: any) {
+      alert("Erro: " + err.message);
+    }
+  };
 
   // Load folder items
   const loadDirectory = useCallback(async (storageId: string | null, folderPath: string) => {
@@ -148,6 +187,13 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
         );
         const idx = audioTracks.findIndex((f) => f.id === item.id);
         playFolder(audioTracks, idx >= 0 ? idx : 0);
+      } else if (item.mediaType === "image") {
+        setPreviewFile(item);
+      } else if (item.extension.toLowerCase() === ".pdf") {
+        setPreviewFile(item);
+      } else if (canOpenAsText(item.name, item.mediaType)) {
+        // Fallback automático para arquivos de texto, código ou formatos desconhecidos
+        setEditingTextFile(item);
       } else {
         setPreviewFile(item);
       }
@@ -257,6 +303,9 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
     const ext = item.extension.toLowerCase();
     if (ext === ".m3u" || ext === ".m3u8") {
       return <ListMusic className="w-6 h-6 text-teal-400" />;
+    }
+    if (canOpenAsText(item.name, item.mediaType)) {
+      return <FileCode className="w-6 h-6 text-blue-400" />;
     }
     switch (item.mediaType) {
       case "video": return <Film className="w-6 h-6 text-red-500" />;
@@ -398,6 +447,15 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                   </button>
 
                   <button
+                    onClick={() => setNewFilePrompt(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold rounded-xl transition-colors"
+                    title="Criar novo arquivo de texto ou código"
+                  >
+                    <FileCode className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Novo Arquivo</span>
+                  </button>
+
+                  <button
                     onClick={() => setShowUploader(true)}
                     className="flex items-center gap-1.5 px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl shadow-md shadow-red-600/20 transition-all"
                   >
@@ -504,6 +562,37 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
               <button
                 type="button"
                 onClick={() => setNewFolderPrompt(false)}
+                className="text-xs text-neutral-400 hover:text-white"
+              >
+                Cancelar
+              </button>
+            </form>
+          )}
+
+          {/* New File Inline Modal / Prompt */}
+          {newFilePrompt && (
+            <form
+              onSubmit={handleCreateFile}
+              className="bg-neutral-900 p-4 rounded-2xl border border-blue-500/50 flex items-center gap-3 animate-in fade-in"
+            >
+              <FileCode className="w-5 h-5 text-blue-400 flex-none" />
+              <input
+                type="text"
+                autoFocus
+                placeholder="Nome do arquivo (ex: notas.txt, script.js, doc.md)..."
+                value={newFileName}
+                onChange={(e) => setNewFileName(e.target.value)}
+                className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+              />
+              <button
+                type="submit"
+                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl"
+              >
+                Criar e Editar
+              </button>
+              <button
+                type="button"
+                onClick={() => setNewFilePrompt(false)}
                 className="text-xs text-neutral-400 hover:text-white"
               >
                 Cancelar
@@ -619,6 +708,18 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                           title="Adicionar à Playlist"
                         >
                           <ListPlus className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {canOpenAsText(item.name, item.mediaType) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingTextFile(item);
+                          }}
+                          className="p-1.5 rounded-lg bg-neutral-900/95 hover:bg-blue-600 text-blue-400 hover:text-white border border-neutral-700/60 shadow-md transition-colors"
+                          title="Editar no Monaco Editor"
+                        >
+                          <Code className="w-3.5 h-3.5" />
                         </button>
                       )}
                       {!item.isDirectory && (
@@ -758,6 +859,15 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                               <ListPlus className="w-3.5 h-3.5" />
                             </button>
                           ) : null}
+                          {canOpenAsText(item.name, item.mediaType) && (
+                            <button
+                              onClick={() => setEditingTextFile(item)}
+                              className="p-1.5 hover:bg-neutral-800 rounded-lg text-blue-400 hover:text-white"
+                              title="Editar no Monaco Editor"
+                            >
+                              <Code className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                           {!item.isDirectory && (
                             <a
                               href={item.downloadUrl}
@@ -822,6 +932,24 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
         <MediaPreviewModal
           file={previewFile}
           onClose={() => setPreviewFile(null)}
+          onOpenInEditor={(f) => setEditingTextFile(f)}
+        />
+      )}
+
+      {/* Monaco Code / Text Editor Modal (100% Offline) */}
+      {editingTextFile && (
+        <MonacoTextEditorModal
+          file={editingTextFile}
+          onClose={() => setEditingTextFile(null)}
+          onSaved={(updated) => {
+            setItems((prev) =>
+              prev.map((it) =>
+                it.id === updated.id
+                  ? { ...it, size: updated.size, updatedAt: updated.updatedAt }
+                  : it
+              )
+            );
+          }}
         />
       )}
 

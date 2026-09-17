@@ -396,3 +396,108 @@ filesRouter.delete("/:id", (req, res) => {
   fileRepo.deleteFile(id);
   return res.json({ success: true });
 });
+
+// GET /api/files/content/:id - Obter conteúdo do arquivo como texto UTF-8
+filesRouter.get("/content/:id", (req, res) => {
+  const id = req.params.id;
+  const file = fileRepo.getById(id);
+
+  if (!file || !fs.existsSync(file.fullPath) || file.isDirectory) {
+    return res.json({ success: false, error: "Arquivo não encontrado ou inválido" }, { status: 404 });
+  }
+
+  try {
+    const content = fs.readFileSync(file.fullPath, "utf-8");
+    return res.json({
+      success: true,
+      file,
+      content,
+    });
+  } catch (err: any) {
+    console.error("[Files] Erro ao ler conteúdo do arquivo:", err);
+    return res.json({ success: false, error: `Erro ao ler arquivo: ${err.message}` }, { status: 500 });
+  }
+});
+
+// POST /api/files/save - Salvar alterações de texto no arquivo
+filesRouter.post("/save", async (req, res) => {
+  try {
+    const body = await req.raw.json();
+    const { id, content } = body;
+
+    if (!id || typeof content !== "string") {
+      return res.json({ success: false, error: "ID e conteúdo em texto são obrigatórios" }, { status: 400 });
+    }
+
+    const file = fileRepo.getById(id);
+    if (!file || !fs.existsSync(file.fullPath)) {
+      return res.json({ success: false, error: "Arquivo não encontrado no disco" }, { status: 404 });
+    }
+
+    if (file.isDirectory) {
+      return res.json({ success: false, error: "Não é possível salvar texto em uma pasta" }, { status: 400 });
+    }
+
+    fs.writeFileSync(file.fullPath, content, "utf-8");
+    const stat = fs.statSync(file.fullPath);
+
+    db.run("UPDATE files SET size = ?, updated_at = ? WHERE id = ?", [stat.size, stat.mtimeMs, file.id]);
+
+    return res.json({
+      success: true,
+      size: stat.size,
+      updatedAt: stat.mtimeMs,
+    });
+  } catch (err: any) {
+    console.error("[Files] Erro ao salvar arquivo:", err);
+    return res.json({ success: false, error: err.message }, { status: 500 });
+  }
+});
+
+// POST /api/files/create-file - Criar um novo arquivo no disco
+filesRouter.post("/create-file", async (req, res) => {
+  try {
+    const body = await req.raw.json();
+    const { storageId, parentPath, fileName, content } = body;
+
+    if (!storageId || !fileName || !fileName.trim()) {
+      return res.json({ success: false, error: "Volume e nome do arquivo são obrigatórios" }, { status: 400 });
+    }
+
+    const trimmedName = fileName.trim();
+    if (/[\\/:*?"<>|]/.test(trimmedName)) {
+      return res.json({ success: false, error: "O nome do arquivo contém caracteres inválidos" }, { status: 400 });
+    }
+
+    const storage = storageRepo.getById(storageId);
+    if (!storage) {
+      return res.json({ success: false, error: "Volume de armazenamento não encontrado" }, { status: 404 });
+    }
+
+    const cleanParent = (parentPath || "").replace(/^\/+|\/+$/g, "");
+    const targetDir = cleanParent ? path.join(storage.path, cleanParent) : storage.path;
+
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+
+    const newFilePath = path.join(targetDir, trimmedName);
+    if (fs.existsSync(newFilePath)) {
+      return res.json({ success: false, error: "Já existe um arquivo ou pasta com esse nome" }, { status: 400 });
+    }
+
+    fs.writeFileSync(newFilePath, content || "", "utf-8");
+    await scanStorageRoot(storageId);
+
+    const createdItem = fileRepo.getByFullPath(newFilePath);
+
+    return res.json({
+      success: true,
+      file: createdItem,
+    });
+  } catch (err: any) {
+    console.error("[Files] Erro ao criar arquivo:", err);
+    return res.json({ success: false, error: err.message }, { status: 500 });
+  }
+});
+

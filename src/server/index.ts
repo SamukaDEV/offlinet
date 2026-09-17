@@ -197,7 +197,31 @@ app.get("/api/thumbnail/:fileId", async (req) => {
 
 
 
-// 7. Interactive API Explorer & Web Visualizer
+// 7. Servir assets do Monaco Editor localmente (100% offline)
+app.get("/monaco/vs/*", (req) => {
+  const url = new URL(req.url, "http://localhost");
+  const relPath = url.pathname.replace(/^\/monaco\/vs\/?/, "");
+  
+  const candidates = [
+    path.resolve(process.cwd(), "dist", "monaco", "vs", relPath),
+    path.resolve(process.cwd(), "node_modules", "monaco-editor", "min", "vs", relPath),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate) && !fs.statSync(candidate).isDirectory()) {
+      return new Response(Bun.file(candidate), {
+        headers: {
+          "Cache-Control": "public, max-age=31536000, immutable",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    }
+  }
+
+  return new Response("Asset not found", { status: 404 });
+});
+
+// 8. Interactive API Explorer & Web Visualizer
 app.use(
   RouteViewerMiddleware(app, {
     path: "/_debug/routes",
@@ -205,7 +229,7 @@ app.use(
   })
 );
 
-// 8. Static frontend files & Single-Page Application (SPA) fallback
+// 9. Static frontend files & Single-Page Application (SPA) fallback
 app.bundle("/*", index);
 
 const serverOptions = {

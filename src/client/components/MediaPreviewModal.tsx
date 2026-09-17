@@ -1,28 +1,33 @@
 import React, { useState, useEffect } from "react";
-import { X, Download, Music, Image as ImageIcon, FileText, AlertCircle } from "lucide-react";
+import { X, Download, Music, Image as ImageIcon, FileText, AlertCircle, FileCode } from "lucide-react";
 import type { FileItem } from "../../types";
 import { formatBytes, formatDate } from "../utils/format";
+import { canOpenAsText } from "../utils/codeLanguages";
 
 interface MediaPreviewModalProps {
   file: FileItem | null;
   onClose: () => void;
+  onOpenInEditor?: (file: FileItem) => void;
 }
 
-export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({ file, onClose }) => {
+export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({ file, onClose, onOpenInEditor }) => {
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loadingText, setLoadingText] = useState(false);
 
   useEffect(() => {
     if (!file) return;
 
-    // If text or json or md, fetch content to display
-    const isTextFile = [".txt", ".json", ".md", ".csv", ".log", ".xml"].includes(file.extension.toLowerCase());
-    if (isTextFile) {
+    // Se pode ser aberto como texto e não for imagem nem áudio binário
+    if (canOpenAsText(file.name, file.mediaType)) {
       setLoadingText(true);
-      fetch(file.downloadUrl || "")
-        .then((r) => r.text())
-        .then((txt) => {
-          setTextContent(txt.slice(0, 50000)); // limit to first 50KB for speed
+      fetch(`/api/files/content/${file.id}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.success) {
+            setTextContent(data.content.slice(0, 50000));
+          } else {
+            setTextContent("Não foi possível carregar o arquivo de texto.");
+          }
           setLoadingText(false);
         })
         .catch(() => {
@@ -36,6 +41,8 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({ file, onCl
 
   if (!file) return null;
 
+  const showEditorButton = onOpenInEditor && canOpenAsText(file.name, file.mediaType);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
       <div className="relative w-full max-w-4xl bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -45,6 +52,9 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({ file, onCl
             {file.mediaType === "image" && <ImageIcon className="w-5 h-5 text-purple-400 flex-none" />}
             {file.mediaType === "audio" && <Music className="w-5 h-5 text-emerald-400 flex-none" />}
             {file.mediaType === "document" && <FileText className="w-5 h-5 text-blue-400 flex-none" />}
+            {file.mediaType !== "image" && file.mediaType !== "audio" && file.mediaType !== "document" && (
+              <FileCode className="w-5 h-5 text-blue-400 flex-none" />
+            )}
             <div className="truncate">
               <h3 className="text-sm font-bold text-white truncate">{file.name}</h3>
               <p className="text-[11px] text-neutral-400">
@@ -54,6 +64,19 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({ file, onCl
           </div>
 
           <div className="flex items-center gap-2">
+            {showEditorButton && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onOpenInEditor(file);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-600/20"
+                title="Abrir no Monaco Editor para editar"
+              >
+                <FileCode className="w-3.5 h-3.5" />
+                <span>Editar no Monaco</span>
+              </button>
+            )}
             <a
               href={file.downloadUrl}
               download
