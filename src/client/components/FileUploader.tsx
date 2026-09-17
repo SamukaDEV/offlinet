@@ -1,5 +1,5 @@
 import React, { useState, useRef } from "react";
-import { Upload, X, CheckCircle, AlertCircle, FileUp, Loader2 } from "lucide-react";
+import { Upload, X, CheckCircle, AlertCircle, FileUp, Loader2, RotateCcw } from "lucide-react";
 import { formatBytes } from "../utils/format";
 
 interface FileUploaderProps {
@@ -64,7 +64,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
     setQueue((prev) => [...prev, ...newItems]);
   };
 
-  const uploadFileItem = (item: UploadQueueItem): Promise<void> => {
+  const uploadFileItem = (item: UploadQueueItem): Promise<boolean> => {
     return new Promise((resolve) => {
       const xhr = new XMLHttpRequest();
       const cleanFolder = targetPath === "/" ? "" : targetPath;
@@ -72,7 +72,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
       setQueue((prev) =>
         prev.map((i) =>
           i.id === item.id
-            ? { ...i, status: "uploading", progress: 0, uploadedBytes: 0 }
+            ? { ...i, status: "uploading", progress: 0, uploadedBytes: 0, error: undefined }
             : i
         )
       );
@@ -114,11 +114,12 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
                         status: "done",
                         progress: 100,
                         uploadedBytes: item.file.size,
+                        error: undefined,
                       }
                     : i
                 )
               );
-              resolve();
+              resolve(true);
               return;
             }
           } catch {}
@@ -139,7 +140,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
             i.id === item.id ? { ...i, status: "error", error: errorMsg } : i
           )
         );
-        resolve();
+        resolve(false);
       };
 
       xhr.onerror = () => {
@@ -150,7 +151,18 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
               : i
           )
         );
-        resolve();
+        resolve(false);
+      };
+
+      xhr.ontimeout = () => {
+        setQueue((prev) =>
+          prev.map((i) =>
+            i.id === item.id
+              ? { ...i, status: "error", error: "Tempo limite esgotado durante o envio" }
+              : i
+          )
+        );
+        resolve(false);
       };
 
       // Send raw binary stream of the file
@@ -162,12 +174,46 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
     setIsProcessing(true);
     const pending = queue.filter((i) => i.status === "pending");
 
+    let anySuccess = false;
     for (const item of pending) {
-      await uploadFileItem(item);
+      const ok = await uploadFileItem(item);
+      if (ok) anySuccess = true;
     }
 
     setIsProcessing(false);
-    onUploadComplete();
+    if (anySuccess) {
+      onUploadComplete();
+    }
+  };
+
+  const retryItem = async (id: string) => {
+    if (isProcessing) return;
+    const item = queue.find((i) => i.id === id);
+    if (!item) return;
+
+    setIsProcessing(true);
+    const ok = await uploadFileItem(item);
+    setIsProcessing(false);
+    if (ok) {
+      onUploadComplete();
+    }
+  };
+
+  const retryAllFailed = async () => {
+    if (isProcessing) return;
+    const failedItems = queue.filter((i) => i.status === "error");
+    if (failedItems.length === 0) return;
+
+    setIsProcessing(true);
+    let anySuccess = false;
+    for (const item of failedItems) {
+      const ok = await uploadFileItem(item);
+      if (ok) anySuccess = true;
+    }
+    setIsProcessing(false);
+    if (anySuccess) {
+      onUploadComplete();
+    }
   };
 
   const removeQueueItem = (id: string) => {
@@ -176,6 +222,8 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
 
   const totalFiles = queue.length;
   const doneFiles = queue.filter((i) => i.status === "done").length;
+  const errorFiles = queue.filter((i) => i.status === "error").length;
+  const pendingFiles = queue.filter((i) => i.status === "pending").length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
@@ -242,15 +290,31 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
           {queue.length > 0 && (
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs text-neutral-400 px-1">
-                <span>Fila de envio ({doneFiles}/{totalFiles} concluídos)</span>
-                {totalFiles > 0 && !isProcessing && (
-                  <button
-                    onClick={() => setQueue([])}
-                    className="text-neutral-500 hover:text-neutral-300"
-                  >
-                    Limpar lista
-                  </button>
-                )}
+                <span>
+                  Fila de envio ({doneFiles}/{totalFiles} concluídos
+                  {errorFiles > 0 && (
+                    <span className="text-rose-400 font-medium"> • {errorFiles} com falha</span>
+                  )})
+                </span>
+                <div className="flex items-center gap-2.5">
+                  {errorFiles > 1 && !isProcessing && (
+                    <button
+                      onClick={retryAllFailed}
+                      className="text-rose-400 hover:text-rose-300 font-medium flex items-center gap-1 transition-colors hover:underline cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Tentar todos com falha ({errorFiles})</span>
+                    </button>
+                  )}
+                  {totalFiles > 0 && !isProcessing && (
+                    <button
+                      onClick={() => setQueue([])}
+                      className="text-neutral-500 hover:text-neutral-300 cursor-pointer"
+                    >
+                      Limpar lista
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
@@ -283,15 +347,36 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
                           </div>
                         )}
                         {item.status === "error" && (
-                          <div className="flex items-center gap-1 text-rose-400 font-medium" title={item.error}>
-                            <AlertCircle className="w-4 h-4" />
-                            <span>Erro</span>
+                          <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1 text-rose-400 font-medium mr-1" title={item.error}>
+                              <AlertCircle className="w-4 h-4" />
+                              <span>Erro</span>
+                            </div>
+                            <button
+                              onClick={() => retryItem(item.id)}
+                              disabled={isProcessing}
+                              className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 transition-all font-medium text-[11px] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                              title="Tentar novamente o envio deste arquivo"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              <span>Tentar novamente</span>
+                            </button>
+                            {!isProcessing && (
+                              <button
+                                onClick={() => removeQueueItem(item.id)}
+                                className="text-neutral-500 hover:text-neutral-300 p-1 cursor-pointer"
+                                title="Remover da lista"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                           </div>
                         )}
                         {item.status === "pending" && !isProcessing && (
                           <button
                             onClick={() => removeQueueItem(item.id)}
-                            className="text-neutral-500 hover:text-neutral-300 p-1"
+                            className="text-neutral-500 hover:text-neutral-300 p-1 cursor-pointer"
+                            title="Remover da lista"
                           >
                             <X className="w-3.5 h-3.5" />
                           </button>
@@ -324,28 +409,56 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
         <div className="p-4 border-t border-neutral-800 bg-neutral-950 flex items-center justify-between">
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-xl text-xs font-semibold text-neutral-400 hover:text-white transition-colors"
+            className="px-4 py-2 rounded-xl text-xs font-semibold text-neutral-400 hover:text-white transition-colors cursor-pointer"
           >
             Fechar
           </button>
 
-          <button
-            onClick={startUploads}
-            disabled={isProcessing || queue.filter((i) => i.status === "pending").length === 0}
-            className="flex items-center gap-2 px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-lg shadow-red-600/20 transition-all"
-          >
+          <div className="flex items-center gap-2">
+            {errorFiles > 0 && pendingFiles > 0 && !isProcessing && (
+              <button
+                onClick={retryAllFailed}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-rose-400 hover:text-rose-300 text-xs font-semibold border border-neutral-700/60 transition-all cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reenviar falhas ({errorFiles})</span>
+              </button>
+            )}
+
             {isProcessing ? (
-              <>
+              <button
+                disabled
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-red-600 opacity-50 cursor-not-allowed text-white text-xs font-bold shadow-lg shadow-red-600/20"
+              >
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span>Enviando arquivos...</span>
-              </>
-            ) : (
-              <>
+              </button>
+            ) : pendingFiles > 0 ? (
+              <button
+                onClick={() => startUploads()}
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-lg shadow-red-600/20 transition-all cursor-pointer"
+              >
                 <Upload className="w-4 h-4" />
-                <span>Iniciar Envio ({queue.filter((i) => i.status === "pending").length})</span>
-              </>
+                <span>Iniciar Envio ({pendingFiles})</span>
+              </button>
+            ) : errorFiles > 0 ? (
+              <button
+                onClick={retryAllFailed}
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-lg shadow-rose-600/20 transition-all cursor-pointer"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>Tentar Novamente ({errorFiles} {errorFiles === 1 ? "falha" : "falhas"})</span>
+              </button>
+            ) : (
+              <button
+                disabled
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-red-600 opacity-50 cursor-not-allowed text-white text-xs font-bold shadow-lg shadow-red-600/20"
+              >
+                <Upload className="w-4 h-4" />
+                <span>Iniciar Envio (0)</span>
+              </button>
             )}
-          </button>
+          </div>
         </div>
       </div>
     </div>
