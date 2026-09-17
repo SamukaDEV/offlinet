@@ -1,8 +1,7 @@
 import fs from "fs";
 import path from "path";
-import os from "os";
 import Router, { LoggerMiddleware, RouteViewerMiddleware } from "routerun";
-import { fileRepo, storageRepo, DATA_PATHS } from "./db";
+import { fileRepo, storageRepo } from "./db";
 import { getLanAddresses } from "./network";
 import { handleRangeStream } from "./streamer";
 import { scanAllRoots } from "./scanner";
@@ -19,10 +18,10 @@ import { filesRouter } from "./routes/files";
 import { mediaRouter } from "./routes/media";
 import { playlistsRouter } from "./routes/playlists";
 import { systemRouter } from "./routes/system";
-import type { SystemInfo } from "../types";
+import index from "../client/index.html";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
-const DIST_DIR = path.resolve(process.cwd(), "dist");
+// const DIST_DIR = path.resolve(process.cwd(), "dist");
 
 // Initialize default storage root if empty (OffliNet LAN)
 function initializeDefaultStorage() {
@@ -50,7 +49,7 @@ function initializeDefaultStorage() {
 initializeDefaultStorage();
 
 // Start initial background scan
-scanAllRoots().catch(console.error);
+// scanAllRoots().catch(console.error);
 
 // Create RouteRun Router
 const app = new Router();
@@ -207,33 +206,7 @@ app.use(
 );
 
 // 8. Static frontend files & Single-Page Application (SPA) fallback
-app.get("/*", (req) => {
-  const url = new URL(req.url || "/", "http://localhost");
-  const pathname = url.pathname;
-
-  if (fs.existsSync(DIST_DIR)) {
-    const staticFilePath = path.join(DIST_DIR, pathname);
-    if (fs.existsSync(staticFilePath) && !fs.statSync(staticFilePath).isDirectory()) {
-      return new Response(Bun.file(staticFilePath));
-    }
-
-    const indexPath = path.join(DIST_DIR, "index.html");
-    if (fs.existsSync(indexPath)) {
-      return new Response(Bun.file(indexPath), {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
-    }
-  }
-
-  const rootIndex = path.resolve(process.cwd(), "index.html");
-  if (fs.existsSync(rootIndex)) {
-    return new Response(Bun.file(rootIndex), {
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    });
-  }
-
-  return new Response("Not Found", { status: 404 });
-});
+app.bundle("/*", index);
 
 const serverOptions = {
   port: PORT,
