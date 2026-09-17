@@ -13,8 +13,13 @@ import {
   AlertCircle,
   FolderPlus,
   Cpu,
+  Power,
+  RotateCcw,
+  Server,
+  ShieldAlert,
 } from "lucide-react";
 import type { StorageRoot, SystemInfo } from "../../types";
+import { HostPowerModal } from "./HostPowerModal";
 
 interface StorageSettingsProps {
   storageRoots: StorageRoot[];
@@ -34,6 +39,7 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [powerAction, setPowerAction] = useState<"shutdown" | "restart" | null>(null);
 
   const handleAddStorage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -311,6 +317,82 @@ export const StorageSettings: React.FC<StorageSettingsProps> = ({
           </form>
         </div>
       </div>
+
+      {/* Host Power Management Section */}
+      <div className="bg-gradient-to-br from-neutral-900 via-neutral-900 to-neutral-950 border border-neutral-800 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-full bg-red-950/80 border border-red-800/60 text-red-400 text-xs font-bold flex items-center gap-1.5">
+                <Power className="w-3 h-3 text-red-500" />
+                Controle de Energia
+              </span>
+              <span className="text-xs text-neutral-400 font-mono flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
+                Host Conectado
+              </span>
+            </div>
+            <h3 className="text-xl font-bold text-white flex items-center gap-2.5">
+              <Server className="w-6 h-6 text-red-500" />
+              <span>Gerenciamento da Máquina Host</span>
+            </h3>
+            <p className="text-xs sm:text-sm text-neutral-400 max-w-2xl leading-relaxed">
+              Desligue ou reinicie o computador físico hospedeiro (
+              <strong className="text-neutral-200">{systemInfo?.hostname || "Host"}</strong> - {systemInfo?.os || "Sistema"}) 
+              diretamente por esta interface a partir de qualquer celular, Smart TV ou PC conectado na rede local.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap sm:flex-nowrap items-center gap-3 w-full md:w-auto">
+            <button
+              onClick={() => setPowerAction("restart")}
+              className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-3 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 hover:text-white rounded-2xl font-bold text-xs border border-neutral-700/80 transition-all cursor-pointer"
+              title="Reiniciar o computador host"
+            >
+              <RotateCcw className="w-4 h-4 text-amber-400" />
+              <span>Reiniciar Host</span>
+            </button>
+
+            <button
+              onClick={() => setPowerAction("shutdown")}
+              className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-3 bg-red-600 hover:bg-red-700 text-white rounded-2xl font-bold text-xs shadow-lg shadow-red-600/30 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+              title="Desligar o computador host"
+            >
+              <Power className="w-4 h-4" />
+              <span>Desligar Máquina Host</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Informative specs strip */}
+        <div className="mt-6 pt-6 border-t border-neutral-800/80 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+          <div>
+            <span className="text-neutral-500 block text-[11px]">Nome do Host:</span>
+            <span className="text-white font-mono font-bold truncate block">{systemInfo?.hostname || "localhost"}</span>
+          </div>
+          <div>
+            <span className="text-neutral-500 block text-[11px]">Sistema Operacional:</span>
+            <span className="text-neutral-300 font-mono truncate block">{systemInfo?.os || "N/D"}</span>
+          </div>
+          <div>
+            <span className="text-neutral-500 block text-[11px]">Plataforma:</span>
+            <span className="text-neutral-300 font-mono capitalize block">{systemInfo?.platform || "desconhecido"}</span>
+          </div>
+          <div>
+            <span className="text-neutral-500 block text-[11px]">Arquivos Mapeados:</span>
+            <span className="text-neutral-300 font-mono block">{systemInfo?.totalIndexedFiles ?? 0} arquivos</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Host Power Confirmation / Countdown Modal */}
+      <HostPowerModal
+        isOpen={!!powerAction}
+        actionType={powerAction}
+        hostname={systemInfo?.hostname || ""}
+        osName={systemInfo?.os || ""}
+        onClose={() => setPowerAction(null)}
+      />
     </div>
   );
 };

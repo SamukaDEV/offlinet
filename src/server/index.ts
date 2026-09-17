@@ -18,6 +18,7 @@ import { storageRouter } from "./routes/storage";
 import { filesRouter } from "./routes/files";
 import { mediaRouter } from "./routes/media";
 import { playlistsRouter } from "./routes/playlists";
+import { systemRouter } from "./routes/system";
 import type { SystemInfo } from "../types";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -88,6 +89,7 @@ app.use("/api/storage", storageRouter);
 app.use("/api/files", filesRouter);
 app.use("/api/media", mediaRouter);
 app.use("/api/playlists", playlistsRouter);
+app.use("/api/system", systemRouter);
 
 // 4. Video & Audio Streaming endpoint: /api/stream/:fileId
 app.get("/api/stream/:fileId", (req) => {
@@ -194,21 +196,7 @@ app.get("/api/thumbnail/:fileId", async (req) => {
   });
 });
 
-// 6. System Info endpoint
-app.get("/api/system/info", (_req, res) => {
-  const stats = fileRepo.getStats();
-  const info: SystemInfo = {
-    lanUrls: getLanAddresses(PORT),
-    os: `${os.type()} ${os.release()}`,
-    platform: os.platform(),
-    hostname: os.hostname(),
-    storageRoots: storageRepo.getAll(),
-    ffmpegAvailable: isFfmpegAvailable(),
-    totalIndexedFiles: stats.totalFiles,
-    totalIndexedVideos: stats.totalVideos,
-  };
-  return res.json({ success: true, info });
-});
+
 
 // 7. Interactive API Explorer & Web Visualizer
 app.use(
@@ -220,7 +208,7 @@ app.use(
 
 // 8. Static frontend files & Single-Page Application (SPA) fallback
 app.get("/*", (req) => {
-  const url = new URL(req.url);
+  const url = new URL(req.url || "/", "http://localhost");
   const pathname = url.pathname;
 
   if (fs.existsSync(DIST_DIR)) {
