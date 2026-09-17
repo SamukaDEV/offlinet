@@ -21,6 +21,23 @@ export function formatSeconds(seconds: number): string {
 
 export const formatDuration = formatSeconds;
 
+export function formatSpeed(bytesPerSecond?: number): string {
+  if (!bytesPerSecond || bytesPerSecond <= 0 || !isFinite(bytesPerSecond)) return "0 B/s";
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+export function formatEta(seconds?: number): string {
+  if (seconds === undefined || seconds === null || !isFinite(seconds) || seconds < 0) return "Calculando...";
+  if (seconds === 0) return "Concluindo...";
+  if (seconds < 60) return `~${seconds}s restantes`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m < 60) return `~${m}m ${s > 0 ? `${s}s ` : ""}restantes`;
+  const h = Math.floor(m / 60);
+  const remainingM = m % 60;
+  return `~${h}h ${remainingM > 0 ? `${remainingM}m ` : ""}restantes`;
+}
+
 export function formatHumanDuration(seconds?: number): string {
   if (!seconds || seconds <= 0) return "";
   const h = Math.floor(seconds / 3600);

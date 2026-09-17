@@ -1,6 +1,23 @@
-import React, { useState, useRef } from "react";
-import { Upload, X, CheckCircle, AlertCircle, FileUp, Loader2, RotateCcw } from "lucide-react";
-import { formatBytes } from "../utils/format";
+import React, { useState, useRef, useEffect } from "react";
+import {
+  Upload,
+  X,
+  CheckCircle,
+  AlertCircle,
+  FileUp,
+  Loader2,
+  RotateCcw,
+  Zap,
+  Clock,
+  HardDrive,
+  Cpu,
+  ChevronDown,
+  ChevronUp,
+  Info,
+  Activity,
+  Square
+} from "lucide-react";
+import { formatBytes, formatSpeed, formatEta, formatSeconds } from "../utils/format";
 
 interface FileUploaderProps {
   storageId: string | null;
@@ -17,6 +34,9 @@ interface UploadQueueItem {
   progress: number;
   uploadedBytes?: number;
   totalBytes?: number;
+  speed?: number; // bytes por segundo
+  eta?: number; // segundos restantes
+  elapsed?: number; // segundos decorridos
   error?: string;
 }
 
@@ -30,7 +50,20 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
   const [queue, setQueue] = useState<UploadQueueItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showTechDetails, setShowTechDetails] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const currentXhrRef = useRef<XMLHttpRequest | null>(null);
+  const isCancelledRef = useRef<boolean>(false);
+
+  // Fecha ou cancela xhr pendente ao desmontar
+  useEffect(() => {
+    return () => {
+      if (currentXhrRef.current) {
+        isCancelledRef.current = true;
+        currentXhrRef.current.abort();
+      }
+    };
+  }, []);
 
   if (!storageId) {
     return (
@@ -43,7 +76,7 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
           </p>
           <button
             onClick={onClose}
-            className="mt-5 px-5 py-2 bg-neutral-800 hover:bg-neutral-700 text-white font-medium rounded-xl text-sm transition-colors"
+            className="mt-5 px-5 py-2 bg-neutral-800 hover:bg-neutral-700 text-white font-medium rounded-xl text-sm transition-colors cursor-pointer"
           >
             Entendido
           </button>
@@ -64,15 +97,39 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
     setQueue((prev) => [...prev, ...newItems]);
   };
 
+  const cancelCurrentUpload = () => {
+    if (currentXhrRef.current) {
+      isCancelledRef.current = true;
+      currentXhrRef.current.abort();
+      currentXhrRef.current = null;
+    }
+  };
+
   const uploadFileItem = (item: UploadQueueItem): Promise<boolean> => {
     return new Promise((resolve) => {
+      isCancelledRef.current = false;
       const xhr = new XMLHttpRequest();
+      currentXhrRef.current = xhr;
       const cleanFolder = targetPath === "/" ? "" : targetPath;
+
+      const startTime = Date.now();
+      let lastTime = startTime;
+      let lastLoaded = 0;
+      let smoothedSpeed = 0;
 
       setQueue((prev) =>
         prev.map((i) =>
           i.id === item.id
-            ? { ...i, status: "uploading", progress: 0, uploadedBytes: 0, error: undefined }
+            ? {
+                ...i,
+                status: "uploading",
+                progress: 0,
+                uploadedBytes: 0,
+                speed: 0,
+                eta: undefined,
+                elapsed: 0,
+                error: undefined,
+              }
             : i
         )
       );
@@ -82,30 +139,64 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
       xhr.setRequestHeader("x-target-folder", encodeURIComponent(cleanFolder));
       xhr.setRequestHeader("x-file-name", encodeURIComponent(item.file.name));
 
-      // Handle precise progress for large files
+      // Handle precise progress, instantaneous speed & ETA
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) {
-          const progress = Math.min(99, Math.round((event.loaded / event.total) * 100));
-          setQueue((prev) =>
-            prev.map((i) =>
-              i.id === item.id
-                ? {
-                    ...i,
-                    progress,
-                    uploadedBytes: event.loaded,
-                    totalBytes: event.total,
-                  }
-                : i
-            )
-          );
+          const now = Date.now();
+          const timeDelta = (now - lastTime) / 1000;
+
+          // Atualiza taxa e ETA a cada 200ms ou quando atingir 100%
+          if (timeDelta >= 0.2 || event.loaded === event.total) {
+            const bytesDelta = event.loaded - lastLoaded;
+            const currentInstantSpeed = timeDelta > 0 ? bytesDelta / timeDelta : 0;
+
+            // Média móvel ponderada (smoothing) para evitar que a taxa oscile desnecessariamente
+            smoothedSpeed =
+              smoothedSpeed === 0
+                ? currentInstantSpeed
+                : smoothedSpeed * 0.65 + currentInstantSpeed * 0.35;
+
+            lastTime = now;
+            lastLoaded = event.loaded;
+
+            const remainingBytes = Math.max(0, event.total - event.loaded);
+            const eta =
+              smoothedSpeed > 1024
+                ? Math.ceil(remainingBytes / smoothedSpeed)
+                : undefined;
+            const elapsed = Math.floor((now - startTime) / 1000);
+
+            const progress = Math.min(99, Math.round((event.loaded / event.total) * 100));
+
+            setQueue((prev) =>
+              prev.map((i) =>
+                i.id === item.id
+                  ? {
+                      ...i,
+                      progress,
+                      uploadedBytes: event.loaded,
+                      totalBytes: event.total,
+                      speed: smoothedSpeed,
+                      eta,
+                      elapsed,
+                    }
+                  : i
+              )
+            );
+          }
         }
       };
 
       xhr.onload = () => {
+        currentXhrRef.current = null;
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const data = JSON.parse(xhr.responseText);
             if (data.success) {
+              const totalDuration = Math.floor((Date.now() - startTime) / 1000);
+              const finalAverageSpeed =
+                totalDuration > 0 ? item.file.size / totalDuration : item.file.size;
+
               setQueue((prev) =>
                 prev.map((i) =>
                   i.id === item.id
@@ -114,6 +205,9 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
                         status: "done",
                         progress: 100,
                         uploadedBytes: item.file.size,
+                        speed: finalAverageSpeed,
+                        eta: 0,
+                        elapsed: totalDuration,
                         error: undefined,
                       }
                     : i
@@ -137,17 +231,30 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
 
         setQueue((prev) =>
           prev.map((i) =>
-            i.id === item.id ? { ...i, status: "error", error: errorMsg } : i
+            i.id === item.id ? { ...i, status: "error", error: errorMsg, speed: 0, eta: undefined } : i
           )
         );
         resolve(false);
       };
 
       xhr.onerror = () => {
+        currentXhrRef.current = null;
         setQueue((prev) =>
           prev.map((i) =>
             i.id === item.id
-              ? { ...i, status: "error", error: "Erro de conexão durante o upload" }
+              ? { ...i, status: "error", error: "Erro de conexão de rede durante o upload", speed: 0, eta: undefined }
+              : i
+          )
+        );
+        resolve(false);
+      };
+
+      xhr.onabort = () => {
+        currentXhrRef.current = null;
+        setQueue((prev) =>
+          prev.map((i) =>
+            i.id === item.id
+              ? { ...i, status: "error", error: "Envio cancelado pelo usuário", speed: 0, eta: undefined }
               : i
           )
         );
@@ -155,10 +262,11 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
       };
 
       xhr.ontimeout = () => {
+        currentXhrRef.current = null;
         setQueue((prev) =>
           prev.map((i) =>
             i.id === item.id
-              ? { ...i, status: "error", error: "Tempo limite esgotado durante o envio" }
+              ? { ...i, status: "error", error: "Tempo limite esgotado durante o envio", speed: 0, eta: undefined }
               : i
           )
         );
@@ -317,27 +425,59 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
                 </div>
               </div>
 
-              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+              <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
                 {queue.map((item) => (
                   <div
                     key={item.id}
-                    className="bg-neutral-950 p-3.5 rounded-xl border border-neutral-800/80 space-y-2 text-xs"
+                    className={`p-3.5 rounded-xl border transition-all text-xs ${
+                      item.status === "uploading"
+                        ? "bg-neutral-950 border-neutral-700/90 shadow-lg shadow-red-950/20"
+                        : "bg-neutral-950 border-neutral-800/80"
+                    }`}
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex-1 truncate">
                         <p className="text-white font-medium truncate">{item.file.name}</p>
-                        <p className="text-neutral-500 text-[11px] font-mono mt-0.5">
-                          {item.status === "uploading" && item.uploadedBytes !== undefined
-                            ? `${formatBytes(item.uploadedBytes)} / ${formatBytes(item.totalBytes || item.file.size)} (${item.progress}%)`
-                            : formatBytes(item.file.size)}
-                        </p>
+                        
+                        {/* Metadados resumidos por status */}
+                        <div className="text-[11px] font-mono mt-0.5 text-neutral-400">
+                          {item.status === "uploading" ? (
+                            <span>
+                              {formatBytes(item.uploadedBytes || 0)} / {formatBytes(item.totalBytes || item.file.size)}
+                              {" "}•{" "}
+                              <span className="text-white font-semibold">{item.progress}%</span>
+                            </span>
+                          ) : item.status === "done" ? (
+                            <span className="text-neutral-400">
+                              {formatBytes(item.file.size)}
+                              {item.elapsed !== undefined && item.elapsed > 0 && (
+                                <span> • Concluído em {formatSeconds(item.elapsed)}</span>
+                              )}
+                              {item.speed !== undefined && item.speed > 0 && (
+                                <span className="text-emerald-400 font-medium"> • Média: {formatSpeed(item.speed)}</span>
+                              )}
+                            </span>
+                          ) : (
+                            formatBytes(item.file.size)
+                          )}
+                        </div>
                       </div>
 
                       <div className="flex items-center gap-2 flex-none">
                         {item.status === "uploading" && (
-                          <div className="flex items-center gap-1.5 text-blue-400 font-medium">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>Enviando...</span>
+                          <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1.5 text-blue-400 font-medium">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Enviando</span>
+                            </div>
+                            <button
+                              onClick={cancelCurrentUpload}
+                              className="px-2 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white transition-colors text-[11px] font-medium flex items-center gap-1 cursor-pointer"
+                              title="Cancelar este envio"
+                            >
+                              <Square className="w-2.5 h-2.5 fill-current" />
+                              <span>Parar</span>
+                            </button>
                           </div>
                         )}
                         {item.status === "done" && (
@@ -384,13 +524,39 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
                       </div>
                     </div>
 
-                    {/* Progress Bar */}
+                    {/* Progress Bar & Real-time Live Stats */}
                     {item.status === "uploading" && (
-                      <div className="w-full bg-neutral-800 h-1.5 rounded-full overflow-hidden">
-                        <div
-                          className="bg-red-600 h-full rounded-full transition-all duration-200"
-                          style={{ width: `${item.progress}%` }}
-                        />
+                      <div className="space-y-2 pt-1">
+                        <div className="w-full bg-neutral-800 h-2 rounded-full overflow-hidden">
+                          <div
+                            className="bg-gradient-to-r from-red-600 to-red-500 h-full rounded-full transition-all duration-200"
+                            style={{ width: `${item.progress}%` }}
+                          />
+                        </div>
+
+                        {/* Telemetria de Velocidade e Tempo Estimado */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 font-mono text-[11px]">
+                          <div className="flex items-center gap-2">
+                            {/* Taxa de Upload */}
+                            <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 px-2 py-0.5 rounded-md font-semibold">
+                              <Zap className="w-3 h-3 text-emerald-400 animate-pulse" />
+                              <span>{formatSpeed(item.speed)}</span>
+                            </div>
+
+                            {/* Tempo Restante Estimado */}
+                            <div className="flex items-center gap-1 text-neutral-300 bg-neutral-900 border border-neutral-800 px-2 py-0.5 rounded-md">
+                              <Clock className="w-3 h-3 text-neutral-400" />
+                              <span>{formatEta(item.eta)}</span>
+                            </div>
+                          </div>
+
+                          {/* Tempo decorrido */}
+                          {item.elapsed !== undefined && item.elapsed > 0 && (
+                            <div className="text-neutral-500 text-[10px]">
+                              Decorrido: {formatSeconds(item.elapsed)}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
 
@@ -403,6 +569,80 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
               </div>
             </div>
           )}
+
+          {/* Technical Transfer Specs Accordion */}
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={() => setShowTechDetails((prev) => !prev)}
+              className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-neutral-950/70 hover:bg-neutral-950 border border-neutral-800 text-neutral-400 hover:text-neutral-200 transition-colors cursor-pointer text-xs"
+            >
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-red-500" />
+                <span className="font-semibold text-neutral-300">Detalhes Técnicos da Transferência</span>
+              </div>
+              <div className="flex items-center gap-1 text-neutral-500 text-[11px]">
+                <span>{showTechDetails ? "Ocultar" : "Ver especificações"}</span>
+                {showTechDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </div>
+            </button>
+
+            {showTechDetails && (
+              <div className="mt-2.5 p-3.5 rounded-xl bg-neutral-950/90 border border-neutral-800/90 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs animate-in fade-in duration-150">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 text-neutral-400 font-medium">
+                    <Cpu className="w-3.5 h-3.5 text-red-400" />
+                    <span>Protocolo de Rede</span>
+                  </div>
+                  <p className="text-neutral-200 font-mono text-[11px] font-semibold">
+                    HTTP Binary Stream
+                  </p>
+                  <p className="text-neutral-500 text-[10px]">
+                    Payload binário bruto direto no body (sem overhead de FormData)
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 text-neutral-400 font-medium">
+                    <HardDrive className="w-3.5 h-3.5 text-amber-400" />
+                    <span>I/O no Servidor Host</span>
+                  </div>
+                  <p className="text-neutral-200 font-mono text-[11px] font-semibold">
+                    Gravação Direta no Disco
+                  </p>
+                  <p className="text-neutral-500 text-[10px]">
+                    Pipeline assíncrono (Zero buffering de RAM no Bun/Host)
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 text-neutral-400 font-medium">
+                    <HardDrive className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Destino no Host</span>
+                  </div>
+                  <p className="text-neutral-200 font-mono text-[11px] truncate" title={storageName || ""}>
+                    {storageName || "Volume padrão"}
+                  </p>
+                  <p className="text-neutral-500 text-[10px] font-mono truncate" title={targetPath}>
+                    Pasta: {targetPath === "/" ? "Raiz" : targetPath}
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 text-neutral-400 font-medium">
+                    <Zap className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Controle de Vazão & Socket</span>
+                  </div>
+                  <p className="text-neutral-200 font-mono text-[11px] font-semibold">
+                    TCP Local com Backpressure
+                  </p>
+                  <p className="text-neutral-500 text-[10px]">
+                    Aceleração máxima na LAN sem risco de transbordamento de buffer
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Footer */}
@@ -426,13 +666,22 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
             )}
 
             {isProcessing ? (
-              <button
-                disabled
-                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-red-600 opacity-50 cursor-not-allowed text-white text-xs font-bold shadow-lg shadow-red-600/20"
-              >
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Enviando arquivos...</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={cancelCurrentUpload}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-semibold border border-neutral-700/60 transition-all cursor-pointer"
+                >
+                  <Square className="w-3 h-3 fill-current text-rose-400" />
+                  <span>Cancelar Envio</span>
+                </button>
+                <button
+                  disabled
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600/60 cursor-not-allowed text-white text-xs font-bold shadow-lg shadow-red-600/20"
+                >
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Enviando...</span>
+                </button>
+              </div>
             ) : pendingFiles > 0 ? (
               <button
                 onClick={() => startUploads()}
@@ -464,3 +713,4 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
     </div>
   );
 };
+
