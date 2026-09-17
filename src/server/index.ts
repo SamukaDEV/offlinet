@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import Router, { LoggerMiddleware, RouteViewerMiddleware } from "routerun";
 import { fileRepo, storageRepo, DATA_PATHS } from "./db";
 import { getLanAddresses } from "./network";
 import { handleRangeStream } from "./streamer";
@@ -8,23 +9,21 @@ import { scanAllRoots } from "./scanner";
 import {
   findLocalCover,
   getCachedThumbnailPath,
-  generateFfmpegThumbnail,
   ensureVideoThumbnail,
   generateSvgPoster,
   isFfmpegAvailable,
   saveUploadedThumbnail,
 } from "./thumbnail";
-import { handleStorageRoutes } from "./routes/storage";
-import { handleFilesRoutes } from "./routes/files";
-import { handleMediaRoutes } from "./routes/media";
-import { handlePlaylistRoutes } from "./routes/playlists";
+import { storageRouter } from "./routes/storage";
+import { filesRouter } from "./routes/files";
+import { mediaRouter } from "./routes/media";
+import { playlistsRouter } from "./routes/playlists";
 import type { SystemInfo } from "../types";
-import index from "../../index.html";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const DIST_DIR = path.resolve(process.cwd(), "dist");
 
-// Initialize default storage root if empty (OffliNet LAN - 2026-09-16T20:28:40)
+// Initialize default storage root if empty (OffliNet LAN)
 function initializeDefaultStorage() {
   const existing = storageRepo.getAll();
   if (existing.length === 0) {
@@ -52,213 +51,212 @@ initializeDefaultStorage();
 // Start initial background scan
 scanAllRoots().catch(console.error);
 
-const serverOptions = {
-  port: PORT,
-  routes: {
-    "/*": index
-  },
-  // Support uploads of large 4K movies/files up to 100GB
-  maxRequestBodySize: 1024 * 1024 * 1024 * 100, // 100 GB
-  idleTimeout: 255, // Max idle timeout for long LAN transfers
-  async fetch(req: Request) {
-    const url = new URL(req.url);
+// Create RouteRun Router
+const app = new Router();
 
-    // Handle CORS preflight
-    if (req.method === "OPTIONS") {
-      return new Response(null, {
+// 1. CORS & Preflight Middleware
+app.use(async (req, res, next) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Range, Authorization, x-storage-id, x-target-folder, x-file-name",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  }
+
+  await next();
+
+  if (res.__response) {
+    res.__response.headers.set("Access-Control-Allow-Origin", "*");
+    res.__response.headers.set("Access-Control-Allow-Headers", "Content-Type, Range, Authorization, x-storage-id, x-target-folder, x-file-name");
+  }
+});
+
+// 2. Request Logger Middleware
+app.use(
+  LoggerMiddleware({
+    timestamp: true,
+    colors: true,
+  })
+);
+
+// 3. Mount API sub-routers
+app.use("/api/storage", storageRouter);
+app.use("/api/files", filesRouter);
+app.use("/api/media", mediaRouter);
+app.use("/api/playlists", playlistsRouter);
+
+// 4. Video & Audio Streaming endpoint: /api/stream/:fileId
+app.get("/api/stream/:fileId", (req) => {
+  const fileId = req.params.fileId;
+  const file = fileRepo.getById(fileId);
+
+  if (!file || !fs.existsSync(file.fullPath)) {
+    return new Response("Arquivo de mídia não encontrado", {
+      status: 404,
+      headers: { "Access-Control-Allow-Origin": "*" },
+    });
+  }
+
+  return handleRangeStream(file.fullPath, req.raw);
+});
+
+// 5. Thumbnails endpoints
+app.post("/api/thumbnail/upload-frame", async (req, res) => {
+  try {
+    const body = await req.raw.json();
+    const { fileId: targetId, base64 } = body;
+    if (targetId && base64) {
+      const data = base64.replace(/^data:image\/\w+;base64,/, "");
+      const buffer = Buffer.from(data, "base64");
+      saveUploadedThumbnail(targetId, buffer);
+      return res.json({ success: true });
+    }
+    return res.json({ success: false }, { status: 400 });
+  } catch (err: any) {
+    return res.json({ success: false, error: err.message }, { status: 500 });
+  }
+});
+
+app.get("/api/thumbnail/:fileId", async (req) => {
+  const fileId = req.params.fileId;
+  const file = fileRepo.getById(fileId);
+  if (!file || !fs.existsSync(file.fullPath)) {
+    return new Response(generateSvgPoster("Mídia"), {
+      headers: {
+        "Content-Type": "image/svg+xml",
+        "Cache-Control": "public, max-age=300",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  }
+
+  // A. If image file, return the image directly
+  if (file.mediaType === "image") {
+    return new Response(Bun.file(file.fullPath), {
+      headers: {
+        "Content-Type": file.mimeType,
+        "Cache-Control": "public, max-age=86400",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  }
+
+  // B. If video, check local poster in directory
+  const localCover = findLocalCover(file.fullPath);
+  if (localCover) {
+    return new Response(Bun.file(localCover), {
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Cache-Control": "public, max-age=86400",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  }
+
+  // C. Check cached thumbnail
+  const cachedThumb = getCachedThumbnailPath(file.id);
+  if (fs.existsSync(cachedThumb)) {
+    return new Response(Bun.file(cachedThumb), {
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Cache-Control": "public, max-age=86400",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  }
+
+  // D. Extract frame via FFmpeg on demand (JIT)
+  if (isFfmpegAvailable()) {
+    const generatedPath = await ensureVideoThumbnail(file);
+    if (generatedPath && fs.existsSync(generatedPath)) {
+      return new Response(Bun.file(generatedPath), {
         headers: {
+          "Content-Type": "image/jpeg",
+          "Cache-Control": "public, max-age=86400",
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Range, Authorization",
-          "Access-Control-Max-Age": "86400",
         },
       });
     }
+  }
 
-    // Helper to add CORS headers
-    function withCors(response: Response): Response {
-      const headers = new Headers(response.headers);
-      headers.set("Access-Control-Allow-Origin", "*");
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
+  // E. Fallback: dynamic high-resolution SVG poster
+  const svg = generateSvgPoster(file.name, file.duration);
+  return new Response(svg, {
+    headers: {
+      "Content-Type": "image/svg+xml; charset=utf-8",
+      "Cache-Control": "public, max-age=3600",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
+});
+
+// 6. System Info endpoint
+app.get("/api/system/info", (_req, res) => {
+  const stats = fileRepo.getStats();
+  const info: SystemInfo = {
+    lanUrls: getLanAddresses(PORT),
+    os: `${os.type()} ${os.release()}`,
+    platform: os.platform(),
+    hostname: os.hostname(),
+    storageRoots: storageRepo.getAll(),
+    ffmpegAvailable: isFfmpegAvailable(),
+    totalIndexedFiles: stats.totalFiles,
+    totalIndexedVideos: stats.totalVideos,
+  };
+  return res.json({ success: true, info });
+});
+
+// 7. Interactive API Explorer & Web Visualizer
+app.use(
+  RouteViewerMiddleware(app, {
+    path: "/_debug/routes",
+    title: "OffliNet API Explorer",
+  })
+);
+
+// 8. Static frontend files & Single-Page Application (SPA) fallback
+app.get("/*", (req) => {
+  const url = new URL(req.url);
+  const pathname = url.pathname;
+
+  if (fs.existsSync(DIST_DIR)) {
+    const staticFilePath = path.join(DIST_DIR, pathname);
+    if (fs.existsSync(staticFilePath) && !fs.statSync(staticFilePath).isDirectory()) {
+      return new Response(Bun.file(staticFilePath));
+    }
+
+    const indexPath = path.join(DIST_DIR, "index.html");
+    if (fs.existsSync(indexPath)) {
+      return new Response(Bun.file(indexPath), {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     }
+  }
 
-    try {
-      // 1. Storage API
-      if (url.pathname.startsWith("/api/storage")) {
-        const res = await handleStorageRoutes(req, url);
-        if (res) return withCors(res);
-      }
+  const rootIndex = path.resolve(process.cwd(), "index.html");
+  if (fs.existsSync(rootIndex)) {
+    return new Response(Bun.file(rootIndex), {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
 
-      // 2. Files API
-      if (url.pathname.startsWith("/api/files")) {
-        const res = await handleFilesRoutes(req, url);
-        if (res) return withCors(res);
-      }
+  return new Response("Not Found", { status: 404 });
+});
 
-      // 3. Media API
-      if (url.pathname.startsWith("/api/media")) {
-        delete require.cache[require.resolve("./routes/media")];
-        const { handleMediaRoutes } = require("./routes/media");
-        const res = await handleMediaRoutes(req, url);
-        if (res) return withCors(res);
-      }
-
-      // 4. Playlists API
-      if (url.pathname.startsWith("/api/playlists")) {
-        delete require.cache[require.resolve("./routes/playlists")];
-        const { handlePlaylistRoutes } = require("./routes/playlists");
-        const res = await handlePlaylistRoutes(req, url);
-        if (res) return withCors(res);
-      }
-
-      // 5. Video / Audio Streaming endpoint: /api/stream/:fileId
-      if (url.pathname.startsWith("/api/stream/")) {
-        const fileId = url.pathname.replace("/api/stream/", "");
-        const file = fileRepo.getById(fileId);
-
-        if (!file || !fs.existsSync(file.fullPath)) {
-          return withCors(new Response("Arquivo de mídia não encontrado", { status: 404 }));
-        }
-
-        return handleRangeStream(file.fullPath, req);
-      }
-
-      // 5. Thumbnails endpoint: /api/thumbnail/:fileId
-      if (url.pathname.startsWith("/api/thumbnail/")) {
-        const fileId = url.pathname.replace("/api/thumbnail/", "");
-
-        // Check if file is thumbnail upload
-        if (fileId === "upload-frame" && req.method === "POST") {
-          const body = await req.json();
-          const { fileId: targetId, base64 } = body;
-          if (targetId && base64) {
-            const data = base64.replace(/^data:image\/\w+;base64,/, "");
-            const buffer = Buffer.from(data, "base64");
-            saveUploadedThumbnail(targetId, buffer);
-            return withCors(Response.json({ success: true }));
-          }
-          return withCors(Response.json({ success: false }, { status: 400 }));
-        }
-
-        const file = fileRepo.getById(fileId);
-        if (!file || !fs.existsSync(file.fullPath)) {
-          // Return default SVG poster
-          return withCors(new Response(generateSvgPoster("Mídia"), {
-            headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=300" },
-          }));
-        }
-
-        // A. If image file, return the image directly
-        if (file.mediaType === "image") {
-          return withCors(new Response(Bun.file(file.fullPath), {
-            headers: { "Content-Type": file.mimeType, "Cache-Control": "public, max-age=86400" },
-          }));
-        }
-
-        // B. If video, check local poster in directory
-        const localCover = findLocalCover(file.fullPath);
-        if (localCover) {
-          return withCors(new Response(Bun.file(localCover), {
-            headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" },
-          }));
-        }
-
-        // C. Check cached thumbnail
-        const cachedThumb = getCachedThumbnailPath(file.id);
-        if (fs.existsSync(cachedThumb)) {
-          return withCors(new Response(Bun.file(cachedThumb), {
-            headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" },
-          }));
-        }
-
-        // D. Extract frame via FFmpeg on demand (JIT)
-        if (isFfmpegAvailable()) {
-          const generatedPath = await ensureVideoThumbnail(file);
-          if (generatedPath && fs.existsSync(generatedPath)) {
-            return withCors(new Response(Bun.file(generatedPath), {
-              headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" },
-            }));
-          }
-        }
-
-        // E. Fallback: dynamic high-resolution SVG poster
-        const svg = generateSvgPoster(file.name, file.duration);
-        return withCors(new Response(svg, {
-          headers: {
-            "Content-Type": "image/svg+xml; charset=utf-8",
-            "Cache-Control": "public, max-age=3600",
-          },
-        }));
-      }
-
-      // 6. System Info endpoint: /api/system/info
-      if (url.pathname === "/api/system/info") {
-        const stats = fileRepo.getStats();
-        const info: SystemInfo = {
-          lanUrls: getLanAddresses(PORT),
-          os: `${os.type()} ${os.release()}`,
-          platform: os.platform(),
-          hostname: os.hostname(),
-          storageRoots: storageRepo.getAll(),
-          ffmpegAvailable: isFfmpegAvailable(),
-          totalIndexedFiles: stats.totalFiles,
-          totalIndexedVideos: stats.totalVideos,
-        };
-        return withCors(Response.json({ success: true, info }));
-      }
-
-      // 7. Production Static Frontend serving
-      if (fs.existsSync(DIST_DIR)) {
-        let filePath = path.join(DIST_DIR, url.pathname);
-        if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-          filePath = path.join(DIST_DIR, "index.html");
-        }
-
-        if (fs.existsSync(filePath)) {
-          return new Response(Bun.file(filePath));
-        }
-      }
-
-      // Development fallback if dist does not exist yet
-      return withCors(new Response(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>OffliNet Server</title>
-            <meta charset="utf-8">
-            <style>
-              body { background: #0a0a0a; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-              .card { background: #171717; padding: 2rem; border-radius: 12px; border: 1px solid #262626; max-width: 500px; text-align: center; }
-              h1 { color: #e50914; margin-top: 0; }
-              a { color: #3b82f6; text-decoration: none; }
-            </style>
-          </head>
-          <body>
-            <div class="card">
-              <h1>OffliNet Server Rodando!</h1>
-              <p>O backend Bun está ativo na porta ${PORT}.</p>
-              <p>Inicie o frontend com <code>bun run dev</code> para acessar a interface web na porta 5173, ou execute <code>bun run build</code> para empacotar a versão de produção.</p>
-              <p><a href="/api/system/info">Ver Informações do Sistema (API)</a></p>
-            </div>
-          </body>
-        </html>
-      `, {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      }));
-    } catch (err: any) {
-      console.error("[Server Error]", err);
-      return withCors(Response.json({ success: false, error: err.message }, { status: 500 }));
-    }
-  },
+const serverOptions = {
+  port: PORT,
+  routes: app.toBunRoutes(),
+  maxRequestBodySize: 1024 * 1024 * 1024 * 100, // 100 GB
+  idleTimeout: 255,
 };
 
 export default serverOptions;
 
-// If global server already exists from previous execution, reload fetch handler
+// If global server already exists from previous execution, reload handler
 if ((globalThis as any).__offlinet_server) {
   try {
     (globalThis as any).__offlinet_server.reload(serverOptions);
@@ -271,9 +269,10 @@ if ((globalThis as any).__offlinet_server) {
 
 const lanAddresses = getLanAddresses(PORT);
 console.log("\n=======================================================");
-console.log(" 🚀 OFFLINET - Streaming & Nuvem LAN (Bun Server)");
+console.log(" 🚀 OFFLINET - Streaming & Nuvem LAN (RouteRun + Bun)");
 console.log("=======================================================");
 console.log(` Servidor local:   http://localhost:${PORT}`);
+console.log(` API Explorer:     http://localhost:${PORT}/_debug/routes`);
 console.log(" Acesso em outros dispositivos na rede local (LAN):");
 for (const addr of lanAddresses) {
   if (!addr.includes("localhost") && !addr.includes("127.0.0.1")) {

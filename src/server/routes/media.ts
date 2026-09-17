@@ -1,159 +1,154 @@
 import fs from "fs";
 import path from "path";
+import Router from "routerun";
 import { fileRepo, storageRepo, watchRepo } from "../db";
 import { getMimeType } from "../streamer";
 import { generateFileId } from "../scanner";
 import type { CatalogCategory, CatalogData, FileItem } from "../../types";
 
-export async function handleMediaRoutes(req: Request, url: URL): Promise<Response | null> {
-  const pathname = url.pathname;
-  const method = req.method;
+export const mediaRouter = new Router();
 
-  // GET /api/media/catalog - Netflix style catalog
-  if (pathname === "/api/media/catalog" && method === "GET") {
-    const allVideos = fileRepo.listMediaVideos(200);
-    const continueWatching = fileRepo.listContinueWatching(15);
-    const roots = storageRepo.getAll().filter(r => r.isActive);
+// GET /api/media/catalog - Netflix style catalog
+mediaRouter.get("/catalog", (_req, res) => {
+  const allVideos = fileRepo.listMediaVideos(200);
+  const continueWatching = fileRepo.listContinueWatching(15);
+  const roots = storageRepo.getAll().filter((r) => r.isActive);
 
-    // Group by storage roots
-    const storageCategories: CatalogCategory[] = roots.map((root) => {
+  // Group by storage roots
+  const storageCategories: CatalogCategory[] = roots
+    .map((root) => {
       const items = allVideos.filter((v) => v.storageId === root.id).slice(0, 20);
       return {
         id: `storage-${root.id}`,
         title: `Em ${root.name}`,
         items,
       };
-    }).filter((cat) => cat.items.length > 0);
+    })
+    .filter((cat) => cat.items.length > 0);
 
-    const categories: CatalogCategory[] = [];
+  const categories: CatalogCategory[] = [];
 
-    // Recent items row
-    if (allVideos.length > 0) {
-      categories.push({
-        id: "recent",
-        title: "Adicionados Recentemente",
-        items: allVideos.slice(0, 20),
-      });
-    }
-
-    // Add per-storage categories
-    categories.push(...storageCategories);
-
-    // If there are many videos, also provide a "Biblioteca Completa" row
-    if (allVideos.length > 20) {
-      categories.push({
-        id: "all-videos",
-        title: "Todos os Vídeos da Biblioteca",
-        items: allVideos,
-      });
-    }
-
-    // Featured video: pick top continue watching or first recent video
-    const featured: FileItem | null = continueWatching[0] || allVideos[0] || null;
-
-    const catalog: CatalogData = {
-      featured,
-      continueWatching,
-      categories,
-      totalMovies: allVideos.length,
-    };
-
-    return Response.json({ success: true, catalog });
-  }
-
-  // GET /api/media/detail/:id
-  if (pathname.startsWith("/api/media/detail/") && method === "GET") {
-    const id = pathname.replace("/api/media/detail/", "");
-    const item = fileRepo.getById(id);
-
-    if (!item) {
-      return Response.json({ success: false, error: "Vídeo não encontrado" }, { status: 404 });
-    }
-
-    // Get sibling files in the same folder (e.g. next episodes in a series!)
-    const siblings = fileRepo.listByFolder(item.storageId, item.parentPath)
-      .filter((f) => f.mediaType === "video" && f.id !== item.id);
-
-    // Check for subtitle
-    const hasSubtitle = checkSubtitleExists(item.fullPath);
-
-    return Response.json({
-      success: true,
-      item,
-      siblings,
-      hasSubtitle,
-      subtitleUrl: hasSubtitle ? `/api/media/subtitles/${item.id}` : null,
+  // Recent items row
+  if (allVideos.length > 0) {
+    categories.push({
+      id: "recent",
+      title: "Adicionados Recentemente",
+      items: allVideos.slice(0, 20),
     });
   }
 
-  // POST /api/media/progress - Save playback position
-  if (pathname === "/api/media/progress" && method === "POST") {
-    try {
-      const body = await req.json();
-      const { fileId, progressSeconds, durationSeconds } = body;
+  // Add per-storage categories
+  categories.push(...storageCategories);
 
-      if (!fileId || typeof progressSeconds !== "number") {
-        return Response.json({ success: false, error: "Dados de progresso inválidos" }, { status: 400 });
-      }
-
-      watchRepo.saveProgress(fileId, progressSeconds, durationSeconds || 0);
-      return Response.json({ success: true });
-    } catch (err: any) {
-      return Response.json({ success: false, error: err.message }, { status: 500 });
-    }
-  }
-
-  // DELETE /api/media/progress/:id - Reset watch progress
-  if (pathname.startsWith("/api/media/progress/") && method === "DELETE") {
-    const id = pathname.replace("/api/media/progress/", "");
-    watchRepo.clearProgress(id);
-    return Response.json({ success: true });
-  }
-
-  // GET /api/media/subtitles/:id - Return WebVTT subtitle
-  if (pathname.startsWith("/api/media/subtitles/") && method === "GET") {
-    const id = pathname.replace("/api/media/subtitles/", "");
-    const item = fileRepo.getById(id);
-
-    if (!item || !fs.existsSync(item.fullPath)) {
-      return new Response("Arquivo não encontrado", { status: 404 });
-    }
-
-    const subPath = findSubtitlePath(item.fullPath);
-    if (!subPath) {
-      return new Response("Legenda não encontrada", { status: 404 });
-    }
-
-    let content = fs.readFileSync(subPath, "utf-8");
-
-    // If SRT, convert to WebVTT format
-    if (subPath.endsWith(".srt")) {
-      content = convertSrtToVtt(content);
-    }
-
-    return new Response(content, {
-      headers: {
-        "Content-Type": "text/vtt; charset=utf-8",
-        "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "public, max-age=3600",
-      },
+  // If there are many videos, also provide a "Biblioteca Completa" row
+  if (allVideos.length > 20) {
+    categories.push({
+      id: "all-videos",
+      title: "Todos os Vídeos da Biblioteca",
+      items: allVideos,
     });
   }
 
-  // GET /api/media/parse-m3u/:id - Parse .m3u / .m3u8 playlist file
-  if (pathname.startsWith("/api/media/parse-m3u/") && method === "GET") {
-    const id = pathname.replace("/api/media/parse-m3u/", "");
-    const file = fileRepo.getById(id);
-    if (!file || !fs.existsSync(file.fullPath)) {
-      return Response.json({ success: false, error: "Arquivo de playlist não encontrado" }, { status: 404 });
+  // Featured video: pick top continue watching or first recent video
+  const featured: FileItem | null = continueWatching[0] || allVideos[0] || null;
+
+  const catalog: CatalogData = {
+    featured,
+    continueWatching,
+    categories,
+    totalMovies: allVideos.length,
+  };
+
+  return res.json({ success: true, catalog });
+});
+
+// POST /api/media/progress - Save playback position
+mediaRouter.post("/progress", async (req, res) => {
+  try {
+    const body = await req.raw.json();
+    const { fileId, progressSeconds, durationSeconds } = body;
+
+    if (!fileId || typeof progressSeconds !== "number") {
+      return res.json({ success: false, error: "Dados de progresso inválidos" }, { status: 400 });
     }
 
-    const result = parseM3u(file);
-    return Response.json({ success: true, ...result });
+    watchRepo.saveProgress(fileId, progressSeconds, durationSeconds || 0);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.json({ success: false, error: err.message }, { status: 500 });
+  }
+});
+
+// DELETE /api/media/progress/:id - Reset watch progress
+mediaRouter.delete("/progress/:id", (req, res) => {
+  const id = req.params.id;
+  watchRepo.clearProgress(id);
+  return res.json({ success: true });
+});
+
+// GET /api/media/subtitles/:id - Return WebVTT subtitle
+mediaRouter.get("/subtitles/:id", (req) => {
+  const id = req.params.id;
+  const item = fileRepo.getById(id);
+
+  if (!item || !fs.existsSync(item.fullPath)) {
+    return new Response("Arquivo não encontrado", { status: 404 });
   }
 
-  return null;
-}
+  const subPath = findSubtitlePath(item.fullPath);
+  if (!subPath) {
+    return new Response("Legenda não encontrada", { status: 404 });
+  }
+
+  let content = fs.readFileSync(subPath, "utf-8");
+  if (subPath.endsWith(".srt")) {
+    content = convertSrtToVtt(content);
+  }
+
+  return new Response(content, {
+    headers: {
+      "Content-Type": "text/vtt; charset=utf-8",
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "public, max-age=3600",
+    },
+  });
+});
+
+// GET /api/media/parse-m3u/:id - Parse .m3u / .m3u8 playlist file
+mediaRouter.get("/parse-m3u/:id", (req, res) => {
+  const id = req.params.id;
+  const file = fileRepo.getById(id);
+  if (!file || !fs.existsSync(file.fullPath)) {
+    return res.json({ success: false, error: "Arquivo de playlist não encontrado" }, { status: 404 });
+  }
+
+  const result = parseM3u(file);
+  return res.json({ success: true, ...result });
+});
+
+// GET /api/media/detail/:id - Movie/video details
+mediaRouter.get("/detail/:id", (req, res) => {
+  const id = req.params.id;
+  const item = fileRepo.getById(id);
+
+  if (!item) {
+    return res.json({ success: false, error: "Vídeo não encontrado" }, { status: 404 });
+  }
+
+  const siblings = fileRepo
+    .listByFolder(item.storageId, item.parentPath)
+    .filter((f) => f.mediaType === "video" && f.id !== item.id);
+
+  const hasSubtitle = checkSubtitleExists(item.fullPath);
+
+  return res.json({
+    success: true,
+    item,
+    siblings,
+    hasSubtitle,
+    subtitleUrl: hasSubtitle ? `/api/media/subtitles/${item.id}` : null,
+  });
+});
 
 function parseM3u(file: FileItem): {
   name: string;
