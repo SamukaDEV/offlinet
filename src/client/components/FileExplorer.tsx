@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Folder,
   HardDrive,
@@ -46,14 +47,36 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   onPlayVideo,
   onRefreshRoots,
 }) => {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Inicializa o storage e o caminho a partir da URL se existirem
+  const urlStorageId = searchParams.get("storageId");
+  const urlPath = searchParams.get("path");
+
   const [currentStorageId, setCurrentStorageId] = useState<string | null>(
-    storageRoots[0]?.id || null
+    urlStorageId || storageRoots[0]?.id || null
   );
-  const [currentPath, setCurrentPath] = useState<string>("/");
+  const [currentPath, setCurrentPath] = useState<string>(urlPath || "/");
   const [items, setItems] = useState<FileItem[]>([]);
   const [breadcrumbs, setBreadcrumbs] = useState<{ name: string; path: string; storageId: string | null }[]>([]);
   const [loading, setLoading] = useState(false);
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+
+  // Persistência da preferência de visualização (grade ou lista) no localStorage
+  const [viewMode, setViewMode] = useState<"grid" | "list">(() => {
+    try {
+      const saved = localStorage.getItem("offlinet_file_view_mode");
+      if (saved === "grid" || saved === "list") return saved;
+    } catch {}
+    return "grid";
+  });
+
+  const handleSetViewMode = (mode: "grid" | "list") => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem("offlinet_file_view_mode", mode);
+    } catch {}
+  };
+
   const [mediaFilter, setMediaFilter] = useState<"all" | MediaType>("all");
   const [searchFilter, setSearchFilter] = useState("");
 
@@ -157,6 +180,38 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
     }
   }, []);
 
+  // Navegação centralizada que sincroniza com os query params da URL
+  const navigateToFolder = useCallback(
+    (storageId: string | null, folderPath: string) => {
+      const cleanPath = folderPath || "/";
+      setCurrentStorageId(storageId);
+      setCurrentPath(cleanPath);
+
+      const nextParams = new URLSearchParams();
+      if (storageId) nextParams.set("storageId", storageId);
+      if (cleanPath && cleanPath !== "/") nextParams.set("path", cleanPath);
+      setSearchParams(nextParams, { replace: true });
+    },
+    [setSearchParams]
+  );
+
+  // Se storageRoots carregar e não tiver storage selecionado nem na URL, seleciona o primeiro
+  useEffect(() => {
+    if (!currentStorageId && storageRoots.length > 0 && !urlStorageId) {
+      navigateToFolder(storageRoots[0].id, "/");
+    }
+  }, [storageRoots, currentStorageId, urlStorageId, navigateToFolder]);
+
+  // Se o usuário clicar no botão Voltar/Avançar do navegador
+  useEffect(() => {
+    const sId = searchParams.get("storageId");
+    const p = searchParams.get("path") || "/";
+    if (sId !== currentStorageId || p !== currentPath) {
+      setCurrentStorageId(sId);
+      setCurrentPath(p);
+    }
+  }, [searchParams]);
+
   useEffect(() => {
     loadDirectory(currentStorageId, currentPath);
   }, [currentStorageId, currentPath, loadDirectory]);
@@ -166,10 +221,9 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
     if (item.isDirectory) {
       // If clicked from top-level roots view
       if (!currentStorageId && item.storageId) {
-        setCurrentStorageId(item.storageId);
-        setCurrentPath("/");
+        navigateToFolder(item.storageId, "/");
       } else {
-        setCurrentPath(item.relativePath);
+        navigateToFolder(item.storageId || currentStorageId, item.relativePath);
       }
     } else {
       // File clicked
@@ -191,8 +245,8 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
         setPreviewFile(item);
       } else if (item.extension.toLowerCase() === ".pdf") {
         setPreviewFile(item);
-      } else if (canOpenAsText(item.name, item.mediaType)) {
-        // Fallback automático para arquivos de texto, código ou formatos desconhecidos
+      } else if (!item.isDirectory && canOpenAsText(item.name, item.mediaType, item.isDirectory)) {
+        // Fallback automático para arquivos de texto, código ou formatos desconhecidos (NUNCA para pastas)
         setEditingTextFile(item);
       } else {
         setPreviewFile(item);
@@ -202,8 +256,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
   // Breadcrumb click
   const handleBreadcrumbClick = (bc: { name: string; path: string; storageId: string | null }) => {
-    setCurrentStorageId(bc.storageId);
-    setCurrentPath(bc.path);
+    navigateToFolder(bc.storageId, bc.path);
   };
 
   // Create folder
@@ -282,17 +335,20 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
     }
   };
 
-  // Filtered items
+  // Filtered items (pastas e arquivos são filtrados pelo searchFilter)
   const filteredItems = items.filter((item) => {
-    // If directory, always show
-    if (item.isDirectory) return true;
+    // Se houver busca por texto, filtra pelo nome (pastas e arquivos)
+    if (searchFilter.trim()) {
+      const q = searchFilter.toLowerCase().trim();
+      if (!item.name.toLowerCase().includes(q)) {
+        return false;
+      }
+    }
 
-    // Filter by type
-    if (mediaFilter !== "all" && item.mediaType !== mediaFilter) return false;
-
-    // Filter by search
-    if (searchFilter && !item.name.toLowerCase().includes(searchFilter.toLowerCase())) {
-      return false;
+    // Filtro por tipo de mídia específico só exibe arquivos daquele tipo
+    if (mediaFilter !== "all") {
+      if (item.isDirectory) return false;
+      if (item.mediaType !== mediaFilter) return false;
     }
 
     return true;
@@ -333,10 +389,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
           <div className="space-y-1.5">
             {/* Top-Level All Disks Option */}
             <button
-              onClick={() => {
-                setCurrentStorageId(null);
-                setCurrentPath("/");
-              }}
+              onClick={() => navigateToFolder(null, "/")}
               className={`w-full flex items-center justify-between p-2.5 rounded-xl text-xs font-semibold transition-all ${
                 currentStorageId === null
                   ? "bg-red-600 text-white shadow-md shadow-red-600/20"
@@ -354,10 +407,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
               return (
                 <button
                   key={root.id}
-                  onClick={() => {
-                    setCurrentStorageId(root.id);
-                    setCurrentPath("/");
-                  }}
+                  onClick={() => navigateToFolder(root.id, "/")}
                   className={`w-full text-left p-2.5 rounded-xl text-xs font-semibold transition-all group ${
                     isSelected
                       ? "bg-neutral-800 text-white border border-neutral-700 shadow-md"
@@ -517,7 +567,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
               <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded-xl p-0.5">
                 <button
-                  onClick={() => setViewMode("grid")}
+                  onClick={() => handleSetViewMode("grid")}
                   className={`p-1.5 rounded-lg transition-colors ${
                     viewMode === "grid" ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-300"
                   }`}
@@ -526,7 +576,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                   <LayoutGrid className="w-4 h-4" />
                 </button>
                 <button
-                  onClick={() => setViewMode("list")}
+                  onClick={() => handleSetViewMode("list")}
                   className={`p-1.5 rounded-lg transition-colors ${
                     viewMode === "list" ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-300"
                   }`}
@@ -710,7 +760,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                           <ListPlus className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      {canOpenAsText(item.name, item.mediaType) && (
+                      {!item.isDirectory && canOpenAsText(item.name, item.mediaType, item.isDirectory) && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -859,7 +909,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                               <ListPlus className="w-3.5 h-3.5" />
                             </button>
                           ) : null}
-                          {canOpenAsText(item.name, item.mediaType) && (
+                          {!item.isDirectory && canOpenAsText(item.name, item.mediaType, item.isDirectory) && (
                             <button
                               onClick={() => setEditingTextFile(item)}
                               className="p-1.5 hover:bg-neutral-800 rounded-lg text-blue-400 hover:text-white"

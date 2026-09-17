@@ -101,10 +101,14 @@ export function getMonacoLanguage(fileName: string): string {
 
 /**
  * Verifica se um arquivo pode ser aberto no editor de texto.
- * Qualquer arquivo que NÃO seja um binário estrito (mídia/executável/zip/pdf)
- * tem fallback como texto (retorna true).
+ * Pastas e arquivos binários estritos (mídia/executável/zip/pdf) retornam false.
+ * Qualquer outro arquivo tem fallback como texto (retorna true).
  */
-export function canOpenAsText(fileName: string, mediaType?: string): boolean {
+export function canOpenAsText(fileName: string, mediaType?: string, isDirectory?: boolean): boolean {
+  if (isDirectory) {
+    return false;
+  }
+
   if (mediaType === "video" || mediaType === "image" || mediaType === "audio") {
     // Se for áudio do tipo playlist .m3u ou .m3u8, ainda assim pode ser editado como texto
     const lower = fileName.toLowerCase();
