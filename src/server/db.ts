@@ -1,16 +1,18 @@
 import { Database } from "bun:sqlite";
 import fs from "fs";
 import path from "path";
-import type { StorageRoot, FileItem, WatchProgress, MediaMetadata, Playlist } from "../types";
+import type { StorageRoot, FileItem, WatchProgress, MediaMetadata, Playlist, TorrentItem, TorrentStatus } from "../types";
 
 const DATA_DIR = path.resolve(process.cwd(), ".offlinet_data");
 const CACHE_DIR = path.resolve(DATA_DIR, "cache");
 const THUMB_DIR = path.resolve(CACHE_DIR, "thumbnails");
+const TORRENTS_DIR = path.resolve(DATA_DIR, "torrents");
 
 // Ensure data directories exist
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
 if (!fs.existsSync(THUMB_DIR)) fs.mkdirSync(THUMB_DIR, { recursive: true });
+if (!fs.existsSync(TORRENTS_DIR)) fs.mkdirSync(TORRENTS_DIR, { recursive: true });
 
 const dbPath = path.join(DATA_DIR, "offlinet.db");
 export const db = new Database(dbPath, { create: true });
@@ -84,17 +86,37 @@ db.exec(`
     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS torrents (
+    info_hash TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    magnet_uri TEXT,
+    torrent_file_path TEXT,
+    storage_id TEXT NOT NULL,
+    download_dir TEXT NOT NULL,
+    target_folder TEXT,
+    status TEXT NOT NULL,
+    added_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    total_size INTEGER DEFAULT 0,
+    downloaded_bytes INTEGER DEFAULT 0,
+    uploaded_bytes INTEGER DEFAULT 0,
+    error_message TEXT,
+    FOREIGN KEY (storage_id) REFERENCES storage_roots(id) ON DELETE CASCADE
+  );
+
   CREATE INDEX IF NOT EXISTS idx_files_storage ON files(storage_id);
   CREATE INDEX IF NOT EXISTS idx_files_media_type ON files(media_type);
   CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_path);
   CREATE INDEX IF NOT EXISTS idx_watch_history_time ON watch_history(last_watched_at);
   CREATE INDEX IF NOT EXISTS idx_playlist_items_pid ON playlist_items(playlist_id);
+  CREATE INDEX IF NOT EXISTS idx_torrents_status ON torrents(status);
 `);
 
 export const DATA_PATHS = {
   dataDir: DATA_DIR,
   cacheDir: CACHE_DIR,
   thumbDir: THUMB_DIR,
+  torrentsDir: TORRENTS_DIR,
 };
 
 // Storage Root queries
@@ -219,6 +241,63 @@ export const fileRepo = {
         file.updatedAt,
       ]
     );
+  },
+
+  upsertBatch: (files: Array<{
+    id: string;
+    storageId: string;
+    relativePath: string;
+    fullPath: string;
+    name: string;
+    extension: string;
+    size: number;
+    isDirectory: boolean;
+    mediaType: string;
+    mimeType: string;
+    parentPath: string;
+    duration?: number;
+    width?: number;
+    height?: number;
+    updatedAt: number;
+  }>) => {
+    if (!files || files.length === 0) return;
+    const stmt = db.prepare(
+      `INSERT INTO files (
+        id, storage_id, relative_path, full_path, name, extension, size, 
+        is_directory, media_type, mime_type, parent_path, duration, width, height, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(full_path) DO UPDATE SET
+        name = excluded.name,
+        extension = excluded.extension,
+        size = excluded.size,
+        media_type = excluded.media_type,
+        mime_type = excluded.mime_type,
+        updated_at = excluded.updated_at`
+    );
+
+    const runBatch = db.transaction((items: typeof files) => {
+      for (const file of items) {
+        stmt.run(
+          file.id,
+          file.storageId,
+          file.relativePath,
+          file.fullPath,
+          file.name,
+          file.extension,
+          file.size,
+          file.isDirectory ? 1 : 0,
+          file.mediaType,
+          file.mimeType,
+          file.parentPath,
+          file.duration || 0,
+          file.width || 0,
+          file.height || 0,
+          file.updatedAt
+        );
+      }
+    });
+
+    runBatch(files);
   },
 
   getById: (id: string): FileItem | null => {
@@ -543,3 +622,138 @@ function mapDbRowToFileItem(row: any): FileItem {
     watchProgress,
   };
 }
+
+// Torrents queries
+export const torrentRepo = {
+  getAll: (): TorrentItem[] => {
+    const rows = db.query(`
+      SELECT 
+        t.*,
+        s.name as storage_name
+      FROM torrents t
+      LEFT JOIN storage_roots s ON t.storage_id = s.id
+      ORDER BY t.added_at DESC
+    `).all() as any[];
+    return rows.map(mapDbRowToTorrentItem);
+  },
+
+  getByInfoHash: (infoHash: string): TorrentItem | null => {
+    const row = db.query(`
+      SELECT 
+        t.*,
+        s.name as storage_name
+      FROM torrents t
+      LEFT JOIN storage_roots s ON t.storage_id = s.id
+      WHERE t.info_hash = ?
+    `).get(infoHash.toLowerCase()) as any;
+    if (!row) return null;
+    return mapDbRowToTorrentItem(row);
+  },
+
+  upsert: (torrent: {
+    infoHash: string;
+    name: string;
+    magnetUri?: string;
+    torrentFilePath?: string;
+    storageId: string;
+    downloadDir: string;
+    targetFolder?: string;
+    status: TorrentStatus;
+    addedAt: number;
+    completedAt?: number;
+    totalSize?: number;
+    downloadedBytes?: number;
+    uploadedBytes?: number;
+    errorMessage?: string;
+  }) => {
+    db.run(
+      `INSERT INTO torrents (
+        info_hash, name, magnet_uri, torrent_file_path, storage_id, download_dir,
+        target_folder, status, added_at, completed_at, total_size, downloaded_bytes,
+        uploaded_bytes, error_message
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(info_hash) DO UPDATE SET
+        name = excluded.name,
+        magnet_uri = COALESCE(excluded.magnet_uri, torrents.magnet_uri),
+        torrent_file_path = COALESCE(excluded.torrent_file_path, torrents.torrent_file_path),
+        status = excluded.status,
+        completed_at = COALESCE(excluded.completed_at, torrents.completed_at),
+        total_size = CASE WHEN excluded.total_size > 0 THEN excluded.total_size ELSE torrents.total_size END,
+        downloaded_bytes = excluded.downloaded_bytes,
+        uploaded_bytes = excluded.uploaded_bytes,
+        error_message = excluded.error_message`,
+      [
+        torrent.infoHash.toLowerCase(),
+        torrent.name,
+        torrent.magnetUri || null,
+        torrent.torrentFilePath || null,
+        torrent.storageId,
+        torrent.downloadDir,
+        torrent.targetFolder || null,
+        torrent.status,
+        torrent.addedAt,
+        torrent.completedAt || null,
+        torrent.totalSize || 0,
+        torrent.downloadedBytes || 0,
+        torrent.uploadedBytes || 0,
+        torrent.errorMessage || null,
+      ]
+    );
+  },
+
+  updateProgress: (infoHash: string, downloadedBytes: number, uploadedBytes: number, totalSize?: number) => {
+    db.run(
+      `UPDATE torrents SET 
+         downloaded_bytes = ?, 
+         uploaded_bytes = ?, 
+         total_size = CASE WHEN ? > 0 THEN ? ELSE total_size END
+       WHERE info_hash = ?`,
+      [downloadedBytes, uploadedBytes, totalSize || 0, totalSize || 0, infoHash.toLowerCase()]
+    );
+  },
+
+  updateStatus: (infoHash: string, status: TorrentStatus, errorMessage?: string, completedAt?: number) => {
+    db.run(
+      `UPDATE torrents SET 
+         status = ?, 
+         error_message = ?, 
+         completed_at = CASE WHEN ? IS NOT NULL THEN ? ELSE completed_at END
+       WHERE info_hash = ?`,
+      [status, errorMessage || null, completedAt ?? null, completedAt ?? null, infoHash.toLowerCase()]
+    );
+  },
+
+  delete: (infoHash: string): boolean => {
+    db.run(`DELETE FROM torrents WHERE info_hash = ?`, [infoHash.toLowerCase()]);
+    return true;
+  },
+};
+
+function mapDbRowToTorrentItem(row: any): TorrentItem {
+  const total = Number(row.total_size || 0);
+  const downloaded = Number(row.downloaded_bytes || 0);
+  const progress = total > 0 ? Math.min(1, downloaded / total) : 0;
+
+  return {
+    infoHash: row.info_hash,
+    name: row.name,
+    magnetUri: row.magnet_uri || undefined,
+    storageId: row.storage_id,
+    storageName: row.storage_name || undefined,
+    downloadDir: row.download_dir,
+    targetFolder: row.target_folder || undefined,
+    status: row.status as TorrentStatus,
+    addedAt: row.added_at,
+    completedAt: row.completed_at || undefined,
+    totalSize: total,
+    downloadedBytes: downloaded,
+    uploadedBytes: Number(row.uploaded_bytes || 0),
+    downloadSpeed: 0,
+    uploadSpeed: 0,
+    progress,
+    numPeers: 0,
+    timeRemaining: 0,
+    errorMessage: row.error_message || undefined,
+  };
+}
+

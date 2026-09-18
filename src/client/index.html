@@ -7,9 +7,22 @@
     <title>OffliNet - Streaming & Nuvem LAN</title>
     <meta name="description" content="Servidor de streaming de filmes e explorador de arquivos para rede local" />
     <link rel="stylesheet" href="./index.css" />
+    <link rel="manifest" href="./manifest.json" />
+    <meta name="theme-color" content="#0c0c0e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   </head>
   <body class="bg-neutral-950 text-neutral-100 antialiased selection:bg-red-600 selection:text-white min-h-screen">
     <div id="root"></div>
     <script type="module" src="./main.js"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/sw.js").catch((err) => {
+            console.debug("[SW] Falha ao registrar ServiceWorker:", err);
+          });
+        });
+      }
+    </script>
   </body>
 </html>

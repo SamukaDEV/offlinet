@@ -11,6 +11,7 @@ import {
   ChevronDown,
   X,
   Layers,
+  Download,
 } from "lucide-react";
 import type { SystemInfo } from "../../types";
 
@@ -48,6 +49,15 @@ const MODES: ModeOption[] = [
     description: "Explorador de pastas, transferências e editor de código",
     badge: "Nuvem & Código",
     colorClass: "text-blue-500 bg-blue-500/10 border-blue-500/30",
+  },
+  {
+    id: "torrents",
+    label: "Torrents",
+    path: "/torrents",
+    icon: Download,
+    description: "Gerenciador de downloads torrent, links magnet e fila",
+    badge: "BitTorrent",
+    colorClass: "text-amber-500 bg-amber-500/10 border-amber-500/30",
   },
   {
     id: "configuracoes",

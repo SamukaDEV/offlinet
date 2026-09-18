@@ -7,12 +7,13 @@
     "dev": "bun run --hot src/server/index.ts",
     "build:css": "bunx @tailwindcss/cli -i ./src/client/index.css -o ./dist/index.css --minify",
     "build:js": "bun build ./src/client/main.tsx --outdir ./dist --entry-naming [name].[ext] --minify",
-    "build": "bun run build:css && bun run build:js && bun -e \"require('fs').copyFileSync('src/client/index.html', 'dist/index.html'); require('fs').cpSync('node_modules/monaco-editor/min/vs', 'dist/monaco/vs', { recursive: true });\"",
+    "build": "bun run build:css && bun run build:js && bun -e \"require('fs').copyFileSync('src/client/index.html', 'dist/index.html'); require('fs').copyFileSync('src/client/manifest.json', 'dist/manifest.json'); require('fs').copyFileSync('src/client/sw.js', 'dist/sw.js'); require('fs').cpSync('node_modules/monaco-editor/min/vs', 'dist/monaco/vs', { recursive: true });\"",
     "server": "bun run src/server/index.ts",
     "start": "bun run src/server/index.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@types/webtorrent": "^3.0.0",
     "bun-plugin-tailwind": "^0.1.2",
     "clsx": "^2.1.1",
     "ffmpeg-static": "^5.3.0",
@@ -21,7 +22,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.3.0",
-    "routerun": "^1.0.14"
+    "routerun": "^1.0.14",
+    "webtorrent": "^3.0.21"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.3.3",
@@ -30,5 +32,9 @@
     "@types/react-dom": "^19.0.4",
     "tailwindcss": "^4.0.12",
     "typescript": "^5.7.3"
-  }
+  },
+  "trustedDependencies": [
+    "node-datachannel",
+    "utp-native"
+  ]
 }

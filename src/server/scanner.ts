@@ -37,18 +37,29 @@ export async function scanStorageRoot(rootId: string): Promise<{ indexed: number
 
   const existingFullPaths: string[] = [];
   let indexed = 0;
+  const batchSize = 100;
+  let batchBuffer: any[] = [];
 
-  function traverseDir(currentDir: string, relDir: string) {
+  const flushBatch = () => {
+    if (batchBuffer.length > 0) {
+      fileRepo.upsertBatch(batchBuffer);
+      batchBuffer = [];
+    }
+  };
+
+  async function traverseDir(currentDir: string, relDir: string) {
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+      entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
     } catch (err) {
       console.error(`[Scanner] Erro ao ler pasta ${currentDir}:`, err);
       return;
     }
 
+    const subDirs: { fullPath: string; relativePath: string }[] = [];
+
     for (const entry of entries) {
-      // Skip hidden system files/folders like .git, $RECYCLE.BIN, etc.
+      // Skip hidden system files/folders like .git, $RECYCLE.BIN, System Volume Information
       if (entry.name.startsWith(".") || entry.name.startsWith("$") || entry.name === "System Volume Information") {
         continue;
       }
@@ -60,13 +71,13 @@ export async function scanStorageRoot(rootId: string): Promise<{ indexed: number
       existingFullPaths.push(fullPath);
 
       try {
-        const stat = fs.statSync(fullPath);
+        const stat = await fs.promises.stat(fullPath);
         const isDir = entry.isDirectory();
         const ext = isDir ? "" : path.extname(entry.name).toLowerCase();
         const fileId = generateFileId(root.id, relativePath);
         const mediaType = isDir ? "other" : getMediaType(ext);
 
-        fileRepo.upsert({
+        const itemRecord = {
           id: fileId,
           storageId: root.id,
           relativePath,
@@ -79,56 +90,52 @@ export async function scanStorageRoot(rootId: string): Promise<{ indexed: number
           mimeType: isDir ? "directory" : getMimeType(fullPath),
           parentPath,
           updatedAt: stat.mtimeMs,
-        });
+        };
 
-        // If it is a video, queue frame thumbnail generation
-        if (!isDir && mediaType === "video") {
-          enqueueVideoThumbnail({
-            id: fileId,
-            storageId: root.id,
-            relativePath,
-            fullPath,
-            name: entry.name,
-            extension: ext,
-            size: stat.size,
-            isDirectory: false,
-            mediaType: "video",
-            mimeType: getMimeType(fullPath),
-            parentPath,
-            updatedAt: stat.mtimeMs,
-          });
-        }
-
-        // If it is an audio file (excluding playlist text files), queue duration probing
-        if (!isDir && mediaType === "audio" && ext !== ".m3u" && ext !== ".m3u8") {
-          enqueueAudioProbe({
-            id: fileId,
-            storageId: root.id,
-            relativePath,
-            fullPath,
-            name: entry.name,
-            extension: ext,
-            size: stat.size,
-            isDirectory: false,
-            mediaType: "audio",
-            mimeType: getMimeType(fullPath),
-            parentPath,
-            updatedAt: stat.mtimeMs,
-          });
-        }
-
+        batchBuffer.push(itemRecord);
         indexed++;
 
+        if (batchBuffer.length >= batchSize) {
+          flushBatch();
+          // Yield to event loop so HTTP requests and media streaming never block
+          await Bun.sleep(1);
+        }
+
+        // Queue thumbnail/probe without blocking
+        if (!isDir && mediaType === "video") {
+          enqueueVideoThumbnail({
+            ...itemRecord,
+            storageName: root.name,
+          } as FileItem);
+        } else if (!isDir && mediaType === "audio" && ext !== ".m3u" && ext !== ".m3u8") {
+          enqueueAudioProbe({
+            ...itemRecord,
+            storageName: root.name,
+          } as FileItem);
+        }
+
         if (isDir) {
-          traverseDir(fullPath, relativePath);
+          subDirs.push({ fullPath, relativePath });
         }
       } catch (err) {
         console.error(`[Scanner] Erro ao processar arquivo ${fullPath}:`, err);
       }
     }
+
+    // Flush any pending items from this directory
+    flushBatch();
+
+    // Traverse subdirectories with small cooperative yield
+    for (const subDir of subDirs) {
+      await Bun.sleep(1);
+      await traverseDir(subDir.fullPath, subDir.relativePath);
+    }
   }
 
-  traverseDir(root.path, "");
+  await traverseDir(root.path, "");
+
+  // Flush remaining items
+  flushBatch();
 
   // Clean up deleted files
   fileRepo.deleteMissingPaths(root.id, existingFullPaths);
@@ -143,7 +150,7 @@ export async function scanAllRoots(): Promise<{ totalIndexed: number }> {
   }
 
   isScanning = true;
-  console.log("[Scanner] Iniciando varredura de todos os volumes...");
+  console.log("[Scanner] Iniciando varredura não-bloqueante de todos os volumes...");
   let totalIndexed = 0;
 
   try {

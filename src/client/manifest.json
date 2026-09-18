@@ -1,0 +1,25 @@
+{
+  "name": "OffliNet - Streaming & Nuvem LAN",
+  "short_name": "OffliNet",
+  "description": "Servidor de streaming de filmes, explorador de arquivos e gerenciador de torrents para rede local",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0c0c0e",
+  "theme_color": "#0c0c0e",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "protocol_handlers": [
+    {
+      "protocol": "magnet",
+      "url": "/torrents?magnet=%s"
+    }
+  ]
+}

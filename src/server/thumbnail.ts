@@ -58,18 +58,20 @@ export interface VideoMetadata {
 }
 
 /**
- * Probes video duration and dimensions via ffmpeg
+ * Probes video duration and dimensions via ffmpeg asynchronously
  */
-export function probeVideo(videoPath: string): VideoMetadata {
+export async function probeVideo(videoPath: string): Promise<VideoMetadata> {
   if (!ffmpegCmd) return { duration: 0, width: 0, height: 0 };
 
   try {
-    const proc = Bun.spawnSync([ffmpegCmd, "-i", videoPath], {
+    const proc = Bun.spawn([ffmpegCmd, "-i", videoPath], {
       stdout: "ignore",
       stderr: "pipe",
     });
 
-    const output = proc.stderr.toString();
+    const output = await new Response(proc.stderr).text();
+    await proc.exited;
+
     let duration = 0;
     let width = 0;
     let height = 0;
@@ -98,16 +100,18 @@ export function probeVideo(videoPath: string): VideoMetadata {
 }
 
 /**
- * Probes media duration (audio or video) in seconds
+ * Probes media duration (audio or video) in seconds asynchronously
  */
-export function probeMediaDuration(mediaPath: string): number {
+export async function probeMediaDuration(mediaPath: string): Promise<number> {
   if (!ffmpegCmd || !fs.existsSync(mediaPath)) return 0;
   try {
-    const proc = Bun.spawnSync([ffmpegCmd, "-i", mediaPath], {
+    const proc = Bun.spawn([ffmpegCmd, "-i", mediaPath], {
       stdout: "ignore",
       stderr: "pipe",
     });
-    const output = proc.stderr.toString();
+    const output = await new Response(proc.stderr).text();
+    await proc.exited;
+
     const durMatch = output.match(/Duration:\s*(\d{2}):(\d{2}):(\d{2}\.?\d*)/);
     if (durMatch) {
       const h = parseFloat(durMatch[1]);
@@ -127,7 +131,7 @@ export async function generateFfmpegThumbnail(videoPath: string, destPath: strin
 
   try {
     // 1. First probe metadata to select the best frame position
-    const { duration } = probeVideo(videoPath);
+    const { duration } = await probeVideo(videoPath);
 
     // Pick timestamp (avoiding black intros at 00:00:00)
     let seekTime = "00:00:15";
@@ -193,9 +197,9 @@ export async function generateFfmpegThumbnail(videoPath: string, destPath: strin
 export async function ensureVideoThumbnail(file: FileItem): Promise<string | null> {
   const cachedThumb = getCachedThumbnailPath(file.id);
 
-  // If metadata is missing in DB, probe it
+  // If metadata is missing in DB, probe it asynchronously
   if (!file.duration || !file.width) {
-    const meta = probeVideo(file.fullPath);
+    const meta = await probeVideo(file.fullPath);
     if (meta.duration > 0 || meta.width > 0) {
       fileRepo.updateMetadata(file.id, meta);
     }
@@ -262,7 +266,7 @@ async function processQueue() {
 
       try {
         if (file.mediaType === "audio") {
-          const dur = probeMediaDuration(file.fullPath);
+          const dur = await probeMediaDuration(file.fullPath);
           if (dur > 0) {
             fileRepo.updateMetadata(file.id, { duration: dur });
           }
@@ -272,6 +276,9 @@ async function processQueue() {
       } catch (err) {
         console.error(`[MediaQueue] Falha ao processar ${file.name}:`, err);
       }
+
+      // Small cooperative pause so the event loop and HTTP server stay completely responsive
+      await Bun.sleep(60);
     }
   } finally {
     isProcessingQueue = false;

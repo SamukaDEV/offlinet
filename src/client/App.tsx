@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation, useNavigate } from "react-router-dom";
 import type { SystemInfo, FileItem, StorageRoot } from "../types";
 import { Navbar } from "./components/Navbar";
 import { MovieMode } from "./components/MovieMode";
 import { FileExplorer } from "./components/FileExplorer";
 import { StorageSettings } from "./components/StorageSettings";
+import { TorrentManager } from "./components/TorrentManager";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { MovieDetailModal } from "./components/MovieDetailModal";
 import { AudioPlayer } from "./components/AudioPlayer";
@@ -14,6 +15,17 @@ export const App: React.FC = () => {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [storageRoots, setStorageRoots] = useState<StorageRoot[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // Extract magnet parameter from URL if opened via PWA protocol handler
+  const magnetParam = new URLSearchParams(location.search).get("magnet");
+
+  useEffect(() => {
+    if (magnetParam && location.pathname !== "/torrents") {
+      navigate(`/torrents?magnet=${encodeURIComponent(magnetParam)}`, { replace: true });
+    }
+  }, [magnetParam, location.pathname, navigate]);
 
   // Modals
   const [activeVideo, setActiveVideo] = useState<FileItem | null>(null);
@@ -66,6 +78,16 @@ export const App: React.FC = () => {
                   storageRoots={storageRoots}
                   onPlayVideo={(file) => setActiveVideo(file)}
                   onRefreshRoots={loadSystemInfo}
+                />
+              }
+            />
+            <Route
+              path="/torrents"
+              element={
+                <TorrentManager
+                  storageRoots={storageRoots}
+                  onPlayVideo={(file) => setActiveVideo(file)}
+                  initialMagnet={magnetParam || undefined}
                 />
               }
             />

@@ -18,10 +18,12 @@ import { filesRouter } from "./routes/files";
 import { mediaRouter } from "./routes/media";
 import { playlistsRouter } from "./routes/playlists";
 import { systemRouter } from "./routes/system";
+import { torrentsRouter } from "./routes/torrents";
+import { torrentManager } from "./torrentManager";
 import index from "../client/index.html";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
-// const DIST_DIR = path.resolve(process.cwd(), "dist");
+// OffliNet LAN Server v1.1.0 - BitTorrent & PWA Ready
 
 // Initialize default storage root if empty (OffliNet LAN)
 function initializeDefaultStorage() {
@@ -47,6 +49,7 @@ function initializeDefaultStorage() {
 }
 
 initializeDefaultStorage();
+torrentManager.init();
 
 // Start initial background scan
 // scanAllRoots().catch(console.error);
@@ -89,6 +92,7 @@ app.use("/api/files", filesRouter);
 app.use("/api/media", mediaRouter);
 app.use("/api/playlists", playlistsRouter);
 app.use("/api/system", systemRouter);
+app.use("/api/torrents", torrentsRouter);
 
 // 4. Video & Audio Streaming endpoint: /api/stream/:fileId
 app.get("/api/stream/:fileId", (req) => {
@@ -199,7 +203,7 @@ app.get("/api/thumbnail/:fileId", async (req) => {
 
 // 7. Servir assets do Monaco Editor localmente (100% offline)
 app.get("/monaco/vs/*", (req) => {
-  const url = new URL(req.url, "http://localhost");
+  const url = new URL(req.raw.url, "http://localhost");
   const relPath = url.pathname.replace(/^\/monaco\/vs\/?/, "");
   
   const candidates = [
@@ -228,6 +232,41 @@ app.use(
     title: "OffliNet API Explorer",
   })
 );
+
+// PWA: Web App Manifest & Service Worker
+app.get("/manifest.json", () => {
+  const p = path.resolve(process.cwd(), "src/client/manifest.json");
+  return new Response(Bun.file(p), {
+    headers: {
+      "Content-Type": "application/manifest+json",
+      "Cache-Control": "public, max-age=3600",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
+});
+
+app.get("/sw.js", () => {
+  const p = path.resolve(process.cwd(), "src/client/sw.js");
+  return new Response(Bun.file(p), {
+    headers: {
+      "Content-Type": "application/javascript",
+      "Service-Worker-Allowed": "/",
+      "Cache-Control": "no-cache",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
+});
+
+app.get("/favicon.svg", () => {
+  const p = path.resolve(process.cwd(), "src/client/favicon.svg");
+  return new Response(Bun.file(p), {
+    headers: {
+      "Content-Type": "image/svg+xml",
+      "Cache-Control": "public, max-age=86400",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
+});
 
 // 9. Static frontend files & Single-Page Application (SPA) fallback
 app.bundle("/*", index);

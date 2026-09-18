@@ -94,3 +94,37 @@ export interface PlaylistItem {
   addedAt: number;
   file?: FileItem;
 }
+
+export type TorrentStatus = 'downloading' | 'paused' | 'seeding' | 'completed' | 'error' | 'metadata';
+
+export interface TorrentFileItem {
+  name: string;
+  path: string;
+  length: number;
+  downloaded: number;
+  progress: number;
+}
+
+export interface TorrentItem {
+  infoHash: string;
+  name: string;
+  magnetUri?: string;
+  storageId: string;
+  storageName?: string;
+  downloadDir: string;
+  targetFolder?: string;
+  status: TorrentStatus;
+  addedAt: number;
+  completedAt?: number;
+  totalSize: number;
+  downloadedBytes: number;
+  uploadedBytes: number;
+  downloadSpeed: number;
+  uploadSpeed: number;
+  progress: number;
+  numPeers: number;
+  timeRemaining: number;
+  files?: TorrentFileItem[];
+  errorMessage?: string;
+}
+
